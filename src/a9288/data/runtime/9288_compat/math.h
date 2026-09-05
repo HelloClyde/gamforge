@@ -1,0 +1,3 @@
+#ifndef GAM4980_9288_MATH_H
+#define GAM4980_9288_MATH_H
+#endif

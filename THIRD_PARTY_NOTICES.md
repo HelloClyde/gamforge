@@ -1,0 +1,39 @@
+# 第三方来源与分发边界
+
+## 项目代码
+
+本项目从 HelloClyde/BBK9288-gam4980 的 PC 原生编译链拆分，保留原有 GPL v3
+许可文件。来源：<https://github.com/HelloClyde/BBK9288-gam4980>。
+参考核心的移植来源还包括 <https://github.com/HelloClyde/BBK9588-gam4980>。
+原生运行库、编译器、测试和本项目新增界面遵循仓库 LICENSE；保留已有作者声明。
+
+`src/a9288/data/boot_reference` 是 PC 工具的参考实现，不是生成 EXE 的运行时解释器。
+发布包包含其源文件及预编译 helper；源码仓库/同版本 tag 提供对应源代码。
+
+## LLVM 工具链
+
+工具链来自 <https://github.com/autch/llvm-s1c33>，固定提交见 `toolchain/manifest.json`。
+LLVM 本身使用 Apache-2.0 WITH LLVM-exception；本项目提供 9288 GNU33 ABI 修正补丁。
+工具链单独构建和分发时保留上游 `llvm/LICENSE.TXT`、源码提交和补丁；并不将 LLVM
+改成 GPL 许可。应用 ZIP 不默认包含完整 LLVM 工具链。
+
+## Python、GUI 与打包
+
+Windows 分发包由 PyInstaller 构建，包含 CPython、Tcl/Tk、Pillow 等组件。
+各组件保留其独立许可；PyInstaller 的 bootloader exception 允许构建应用分发包。
+PyInstaller 收集的组件元数据位于包内 `_internal`。维护者还应审查每次构建的依赖清单，
+具体直接依赖在 `pyproject.toml` 和 `requirements-dev.txt`。
+
+## SDK、固件、游戏与资源
+
+- 9288 SDK、A 系列 `8.BIN` / `E.BIN`、商业 GAM 不包含在源码或 CI 分发包中。
+  用户需自行取得并有权使用；项目 GPL 不授予这些外部文件的再分发权。
+- `c6502_symbols.json` 仅记录 C6502 开发包 `test.map` 中函数名/地址事实，未包含
+  完整开发包、编译器二进制或 SDK 实现。
+- `runtime/c6502_native_query_assets.h` 中的小型对话框位图常量源于兼容性逆向，
+  不应解释为对原固件美术资产的所有权声明；若权利方提出异议，请联系维护者处理。
+- 默认图标沿用原项目生成的四灰阶设备图案和 9288 风格边框；设备名称、商标属于相应权利人，
+  本项目不是步步高官方产品。
+- 原生转换后的 EXE 包含用户游戏资源；项目不会将其自动公开、纳入源码或上传 release。
+
+版权、商标或许可问题请在仓库联系维护者，并避免在公开 issue 粘贴完整游戏/固件。

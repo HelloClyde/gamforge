@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-series-9288-translator"
+version = "0.1.0"
+description = "Offline native C6502 GAM to BBK 9288 S1C33/KF2 compiler with a desktop GUI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+authors = [{name = "HelloClyde"}]
+dependencies = ["Pillow>=11,<13"]
+
+[project.urls]
+Repository = "https://github.com/HelloClyde/a-series-9288-translator"
+Issues = "https://github.com/HelloClyde/a-series-9288-translator/issues"
+
+[project.scripts]
+a9288 = "a9288.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+a9288 = ["data/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+markers = ["rom: optional equivalence checks requiring user-provided A-series firmware"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_runtime.py" = ["E741"]

@@ -1,0 +1,135 @@
+diff --git a/llvm/lib/Target/S1C33/S1C33CallingConv.td b/llvm/lib/Target/S1C33/S1C33CallingConv.td
+index 6405bd7..d037455 100644
+--- a/llvm/lib/Target/S1C33/S1C33CallingConv.td
++++ b/llvm/lib/Target/S1C33/S1C33CallingConv.td
+@@ -8,16 +8,16 @@
+ //
+ // S5U1C33000C (gcc33) calling convention — see DESIGN_SPEC §3.
+ //
+-// Arguments: R12 → R13 → R14 → R15 (overflow to stack)
+-// Return: R10 (32-bit), R10+R11 (64-bit)
++// Arguments: R6 → R7 → R8 → R9 (overflow to stack)
++// Return: R4 (32-bit), R4+R5 (64-bit)
+ // Callee-saved: R0, R1, R2, R3
+-// Reserved: R8 (GP/kernel table base)
++// Reserved: R15 (9288 application data pointer)
+ //
+ //===----------------------------------------------------------------------===//
+ 
+ // S1C33 C return-value convention.
+ def RetCC_S1C33 : CallingConv<[
+-  CCIfType<[i32, f32], CCAssignToReg<[R10, R11]>>,
++  CCIfType<[i32, f32], CCAssignToReg<[R4, R5]>>,
+   CCAssignToStack<4, 4>
+ ]>;
+ 
+@@ -30,7 +30,7 @@ def CC_S1C33 : CallingConv<[
+   // fewer than 2 regs are free, or returns true (fall-through) when a pair is
+   // available so the normal CCAssignToReg below allocates the lo half.
+   CCIfSplit<CCCustom<"CC_S1C33_AssignDoubleHalf">>,
+-  CCIfType<[i32, f32], CCAssignToReg<[R12, R13, R14, R15]>>,
++  CCIfType<[i32, f32], CCAssignToReg<[R6, R7, R8, R9]>>,
+   CCAssignToStack<4, 4>
+ ]>;
+ 
+diff --git a/llvm/lib/Target/S1C33/S1C33ISelLowering.cpp b/llvm/lib/Target/S1C33/S1C33ISelLowering.cpp
+index fb0bd4f..98e004d 100644
+--- a/llvm/lib/Target/S1C33/S1C33ISelLowering.cpp
++++ b/llvm/lib/Target/S1C33/S1C33ISelLowering.cpp
+@@ -48,8 +48,8 @@ static bool CC_S1C33_AssignDoubleHalf(unsigned ValNo, MVT ValVT, MVT LocVT,
+                                       CCValAssign::LocInfo LocInfo,
+                                       ISD::ArgFlagsTy ArgFlags,
+                                       CCState &State) {
+-  static const MCPhysReg ArgRegs[] = {S1C33::R12, S1C33::R13, S1C33::R14,
+-                                      S1C33::R15};
++  static const MCPhysReg ArgRegs[] = {S1C33::R6, S1C33::R7, S1C33::R8,
++                                      S1C33::R9};
+   // Index of the first unallocated register (4 = all allocated).
+   unsigned First = State.getFirstUnallocated(ArgRegs);
+   // Need at least two consecutive regs (First and First+1).
+diff --git a/llvm/lib/Target/S1C33/S1C33RegisterInfo.cpp b/llvm/lib/Target/S1C33/S1C33RegisterInfo.cpp
+index 46210d0..752b164 100644
+--- a/llvm/lib/Target/S1C33/S1C33RegisterInfo.cpp
++++ b/llvm/lib/Target/S1C33/S1C33RegisterInfo.cpp
+@@ -44,16 +44,8 @@ S1C33RegisterInfo::getCallPreservedMask(const MachineFunction &MF,
+ 
+ BitVector S1C33RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
+   BitVector Reserved(getNumRegs());
+-  // R8: kernel table base pointer, always 0x0 per P/ECE calling convention.
+-  // The kernel sets R8 = 0x0 before calling any app callback; pceapi stubs
+-  // read kernel function pointers via "ext N / ld.w %r9, [%r8]".
+-  // User-compiled code must never modify R8.  Reserved to enforce this.
+-  Reserved.set(S1C33::R8);
+-  // R9: scratch (caller-saved), same as R4-R7.
+-  // Safe because all P/ECE kernel interrupt handlers use pushn %r15 / popn %r15
+-  // (INT_BEGIN/INT_END macros), which saves/restores R0-R15 including R9.
+-  // pceapi stubs use R9 as caller-saved scratch (ext33 ABI convention), so
+-  // treating R9 as caller-saved is ABI-compatible with SDK libraries.
++  // The BBK 9288 loader owns R15 as the application's data pointer.
++  Reserved.set(S1C33::R15);
+   // Special registers are not allocatable.
+   Reserved.set(S1C33::SP);
+   Reserved.set(S1C33::PC);
+diff --git a/llvm/lib/Target/S1C33/S1C33RegisterInfo.td b/llvm/lib/Target/S1C33/S1C33RegisterInfo.td
+index 0bec098..309aa70 100644
+--- a/llvm/lib/Target/S1C33/S1C33RegisterInfo.td
++++ b/llvm/lib/Target/S1C33/S1C33RegisterInfo.td
+@@ -80,16 +80,16 @@ def AHR : S1C33Reg<20, "ahr">, DwarfRegNum<[20]>;
+ // GR32: Allocatable general-purpose registers.
+ // Allocation order: caller-saved first (prefer spilling cheapest), then
+ // callee-saved, then special-purpose (arg/retval registers) last.
+-// R8 is excluded (reserved: kernel table base pointer).
++// R15 is reserved by RegisterInfo but remains legal in explicit assembly.
+ def GR32 : RegisterClass<"S1C33", [i32], 32,
+     (add // Scratch (caller-saved, free to use first)
+-         R4, R5, R6, R7, R9,
++         R10, R11, R12, R13, R14,
+          // Callee-saved (allocate before arg/retval to preserve them)
+          R0, R1, R2, R3,
+          // Return value registers
+-         R10, R11,
++         R4, R5,
+          // Argument registers (highest cost to spill)
+-         R12, R13, R14, R15
++         R6, R7, R8, R9, R15
+     )> {
+   let DecoderMethod = "DecodeGR32RegisterClass";
+ }
+diff --git a/llvm/lib/Target/S1C33/S1C33HoistImmInLoop.cpp b/llvm/lib/Target/S1C33/S1C33HoistImmInLoop.cpp
+--- a/llvm/lib/Target/S1C33/S1C33HoistImmInLoop.cpp
++++ b/llvm/lib/Target/S1C33/S1C33HoistImmInLoop.cpp
+@@ -168,6 +168,19 @@ bool S1C33HoistImmInLoop::runOnMachineFunction(MachineFunction &MF) {
+   if (skipFunction(MF.getFunction()))
+     return false;
+ 
++  // Direct-threaded interpreters form one enormous natural loop whose
++  // hundreds of opcode blocks share many small immediates.  Hoisting every
++  // repeated value into that loop's preheader creates long-lived virtual
++  // registers and turns cheap immediates into stack spills.  Keep the pass
++  // for ordinary loops, but leave large indirect-branch state machines to
++  // the normal immediate forms and register allocator rematerialization.
++  if (MF.size() > 128) {
++    for (const MachineBasicBlock &MBB : MF)
++      for (const MachineInstr &MI : MBB)
++        if (MI.isIndirectBranch())
++          return false;
++  }
++
+   const S1C33InstrInfo &TII = *MF.getSubtarget<S1C33Subtarget>().getInstrInfo();
+   MachineLoopInfo &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
+   MachineRegisterInfo &MRI = MF.getRegInfo();
+diff --git a/llvm/lib/Target/S1C33/S1C33DelaySlotFiller.cpp b/llvm/lib/Target/S1C33/S1C33DelaySlotFiller.cpp
+--- a/llvm/lib/Target/S1C33/S1C33DelaySlotFiller.cpp
++++ b/llvm/lib/Target/S1C33/S1C33DelaySlotFiller.cpp
+@@ -142,6 +142,10 @@ bool S1C33DelaySlotFiller::isDelaySlotCandidate(const MachineInstr &MI) const {
+   // one.  For ret.d this means reading from the wrong stack location
+   // (e.g. outgoing arg area instead of return address → jump to 0).
+-  if (definesRegisterSemantically(MI, S1C33::SP, TRI))
++  // Reads are unsafe too: call.d pushes its return address BEFORE the
++  // delay-slot instruction. Moving `ld.w %r6, %sp` into that slot changes
++  // a pointer to a local object into a pointer to the return address.
++  if (definesRegisterSemantically(MI, S1C33::SP, TRI) ||
++      readsRegisterSemantically(MI, S1C33::SP, TRI))
+     return false;
+   // Reject instructions larger than 2 bytes (ext-prefixed instructions).
+   // All standard 16-bit S1C33 instructions have Size==0 (default); only

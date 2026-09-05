@@ -1,0 +1,29 @@
+name: 转换或兼容性问题
+description: 提交可复现的转换、界面或真机兼容性问题，不上传游戏/固件。
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 转换器版本或 commit
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、预期与实际结果
+      description: 说明 Windows / SDK / 工具链版本，以及问题发生在编译期还是 9288 上。
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 经脱敏的日志或报告摘要
+      description: 去掉个人目录、存档和敏感数据，不附原始 GAM 或 BIN。
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 文件与授权
+      options:
+        - label: 没有上传商业游戏、固件、SDK、存档或访问凭据。
+          required: true

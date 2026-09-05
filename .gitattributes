@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.patch text eol=lf
+*.patch -whitespace
+*.png binary
+*.bin binary

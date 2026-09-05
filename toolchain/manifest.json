@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/autch/llvm-s1c33.git",
+  "revision": "f6e7f2d31f56b80e74f116f96f6fac5ffb126cf7",
+  "patch": "9288-gnu33-abi.patch",
+  "target": "s1c33-none-elf",
+  "abi": "9288-gnu33-r6-r9-return-r4-reserved-r15",
+  "tools": ["clang", "ld.lld", "llvm-objcopy", "llvm-readelf"]
+}
