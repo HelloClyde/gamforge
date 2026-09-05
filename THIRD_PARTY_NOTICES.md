@@ -21,8 +21,9 @@ LLVM 本身使用 Apache-2.0 WITH LLVM-exception；本项目提供 9288 GNU33 AB
 
 Windows 分发包由 PyInstaller 构建，包含 CPython、Tcl/Tk、Pillow 等组件。
 各组件保留其独立许可；PyInstaller 的 bootloader exception 允许构建应用分发包。
-PyInstaller 收集的组件元数据位于包内 `_internal`。维护者还应审查每次构建的依赖清单，
-具体直接依赖在 `pyproject.toml` 和 `requirements-dev.txt`。
+发布脚本从实际构建环境收集 CPython、Pillow、PyInstaller 的许可证，以及冻结包中的
+Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本。缺失许可证时构建失败。
+维护者还应审查每次构建的依赖清单，具体直接依赖在 `pyproject.toml` 和 `requirements-dev.txt`。
 
 ## SDK、固件、游戏与资源
 

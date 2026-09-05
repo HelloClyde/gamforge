@@ -37,6 +37,8 @@ tag 版本必须与两处元数据完全一致。tag build 再次测试并构建
 - `A9288-CLI.exe --self-test` 必须返回 PASS，且 `boot_helper=true`。
 - `--worker compiler.backend --help` 必须成功，验证冻结进程协议。
 - 不得携带 GAM、存档、SDK、固件、用户日志或游戏 EXE。
+- `licenses/` 保留构建环境的 CPython、Pillow、PyInstaller、Tcl/Tk 许可与版本记录。
+- `toolchain/` 随包提供构建说明和 ABI 补丁，但不包含 LLVM 二进制或 SDK。
 - 用户的 9288 SDK、ROM 和 LLVM 工具链需自行配置；当前没有把这些外部依赖称为“全内置”。
 
 在 Windows 本地运行 `python scripts/build_windows.py` 可执行同一打包/自检流程。
