@@ -181,15 +181,10 @@ return 0;}
             "#define C6502_IO_BASE"
             + runtime.split("#define C6502_IO_BASE", 1)[1].split("extern const", 1)[0]
         )
-        keys = (
-            "static c6502_u8 c6502_key_previous[8];"
-            + runtime.split("static c6502_u8 c6502_key_previous[8];", 1)[1].split(
-                "static c6502_u32 c6502_last_frame_tick", 1
-            )[0]
-        )
+        keys = (DATA / "runtime/c6502_native_input.h").read_text(encoding="utf-8")
         helper = (
-            "static c6502_u8 poll_hardware_key"
-            + runtime.split("static c6502_u8 poll_hardware_key", 1)[1].split(
+            "static void native_capture_keys(void)\n{"
+            + runtime.split("static void native_capture_keys(void)\n{", 1)[1].split(
                 "static c6502_u32 native_clock", 1
             )[0]
         )
@@ -202,6 +197,8 @@ typedef unsigned int c6502_u32;
 static unsigned now,psr=0x10,c6502_validation_key_count,c6502_validation_keys[32][4];
 static unsigned char matrix[8],rowreg=255,k5=0x43,port=0x12,factors,k5data,portdata;
 static unsigned native_clock(void){return now;}
+static struct {unsigned key_scans,key_scan_max_gap_ticks,key_edges,key_repeats,
+ keys_consumed,key_queue_peak,key_queue_overflows;} c6502_perf;
 static unsigned read_psr(void){return psr;}
 static void write_psr(unsigned p){psr=p;}
 """
@@ -211,6 +208,7 @@ static void write_psr(unsigned p){psr=p;}
 static volatile unsigned char *hardware_byte(unsigned address){
  unsigned active=0;for(unsigned i=0;i<8;++i)if(!(rowreg&(1u<<i)))active|=matrix[i];
  switch(address){
+ case C6502_CTM_DIVIDER_ADDRESS:{static unsigned char divider;divider=now;return &divider;}
  case C6502_KEY_ROW_SELECT_ADDRESS:return &rowreg;
  case C6502_K5_FUNCTION_ADDRESS:return &k5;
  case C6502_PORT0_IOCTRL_ADDRESS:return &port;
@@ -221,21 +219,26 @@ static volatile unsigned char *hardware_byte(unsigned address){
  }
 }
 """
+            + '#include "c6502_native_matrix.h"\n'
             + helper
             + """
+static unsigned char poll_hardware_key(void){native_capture_keys();return native_take_key();}
 int main(void){
+ c6502_input_active=1;
  assert(poll_hardware_key()==255);
  now=1;matrix[1]=64;assert(poll_hardware_key()==0x2f);
  now=2;assert(poll_hardware_key()==255);
  now=1000;assert(poll_hardware_key()==255); /* Enter never auto-repeats */
  now=1001;matrix[1]=0;assert(poll_hardware_key()==255);
- now=1002;matrix[1]=64;assert(poll_hardware_key()==0x2f);
- now=1003;matrix[1]=0;matrix[7]=32;assert(poll_hardware_key()==0x37);
- now=1082;assert(poll_hardware_key()==255);
- now=1083;assert(poll_hardware_key()==0x37);
- now=1102;assert(poll_hardware_key()==255);
- now=1103;assert(poll_hardware_key()==0x37);
- now=1104;matrix[7]=0;assert(poll_hardware_key()==255);
+ now=1005;assert(poll_hardware_key()==255); /* stable release before next tap */
+ now=1006;matrix[1]=64;assert(poll_hardware_key()==0x2f);
+ now=1007;matrix[1]=0;matrix[7]=32;assert(poll_hardware_key()==0x37);
+ now=1044;assert(poll_hardware_key()==255);
+ now=1086;assert(poll_hardware_key()==255);
+ now=1087;assert(poll_hardware_key()==0x37);
+ now=1106;assert(poll_hardware_key()==255);
+ now=1107;assert(poll_hardware_key()==0x37);
+ now=1108;matrix[7]=0;assert(poll_hardware_key()==255);
  assert(psr==0x10 && rowreg==255 && k5==0x43 && port==0x12);
  return 0;
 }
@@ -245,7 +248,9 @@ int main(void){
             c = Path(folder) / "test.c"
             exe = Path(folder) / "test.exe"
             c.write_text(source, encoding="utf-8")
-            subprocess.run([cc, "-O2", str(c), "-o", str(exe)], check=True)
+            subprocess.run(
+                [cc, "-O2", "-I", str(DATA / "runtime"), str(c), "-o", str(exe)], check=True
+            )
             subprocess.run([str(exe)], check=True)
 
     def test_hardware_clock_keeps_seconds_and_rejects_invalid_samples(self):
@@ -256,7 +261,7 @@ int main(void){
         helper = (
             "static c6502_u32 native_clock(void)\n{"
             + runtime.split("static c6502_u32 native_clock(void)\n{", 1)[1].split(
-                "static c6502_u8 native_window_key", 1
+                "void c6502_native_finish_input", 1
             )[0]
         )
         source = (
@@ -268,6 +273,7 @@ typedef unsigned int c6502_u32;
 static unsigned char ctm[6]={254,59,59,23,1,0};
 static volatile unsigned char *hardware_byte(unsigned address){assert(address==0x40153);return ctm;}
 """
+            + (DATA / "runtime/c6502_native_clock.h").read_text(encoding="utf-8")
             + helper
             + """
 int main(void){
@@ -286,7 +292,7 @@ int main(void){
             subprocess.run([cc, "-O2", str(c), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
-    def test_poll_never_waits_without_queued_messages(self):
+    def test_game_poll_never_touches_host_messages(self):
         cc = shutil.which("gcc")
         if not cc:
             self.skipTest("host gcc is not installed")
@@ -308,19 +314,29 @@ typedef unsigned char c6502_u8;
 typedef unsigned short c6502_u16;
 typedef unsigned int c6502_u32;
 typedef unsigned T_GUI_HWND;
+typedef unsigned T_WORD;
 typedef struct {unsigned message,wParam;} T_GUI_Msg;
 static struct {unsigned window;} c6502_native_state={1};
 #define MSG_USER 2048
-#define MSG_KEYDOWN 1
-#define MSG_KEYUP 2
-#define MSG_CHAR 3
+#define MSG_FIRSTKEYMSG 0x10
+#define MSG_LASTKEYMSG 0x1f
+#define MSG_KEYDOWN 0x10
+#define MSG_KEYUP 0x12
+#define MSG_CHAR 0x11
+#define MSG_DT_KEYOFF 0xda
+#define MSG_DT_KEYDOWN 0xea
+#define MSG_DT_SYSKEYUP 0xef
 #define LOUHWORD(x) (x)
-static unsigned queue,gets,blocked,hardware_key=255,quit;
-static unsigned fnGUI_HavePendingMessage(unsigned w){return queue!=0;}
-static int fnGUI_GetMessage(T_GUI_Msg *m,unsigned w){++gets;if(!queue)++blocked;m->message=queue;m->wParam=42;queue=0;return !quit;}
-static void fnGUI_DispatchMessage(T_GUI_Msg *m){}
+static unsigned queue,gets,blocked,hardware_key=255,quit,scans,takes;
+static volatile unsigned c6502_validation_key_count,c6502_validation_keys[32][4];
+static unsigned fnGUI_HavePendingMessage(unsigned w){assert(!"GUI in game");return 0;}
+static int fnGUI_GetMessage(T_GUI_Msg *m,unsigned w){assert(!"GUI in game");return 0;}
+static void fnGUI_DispatchMessage(T_GUI_Msg *m){assert(!"GUI in game");}
+static void fnGUI_TranslateMessage(T_GUI_Msg *m){assert(!"GUI in game");}
 static unsigned char map_key(unsigned x){return x;}
-static unsigned char poll_hardware_key(void){unsigned key=hardware_key;hardware_key=255;return key;}
+static void native_capture_keys(void){++scans;}
+static void native_key_trace(unsigned kind,unsigned char code,unsigned tick){assert(kind==2||kind==3);}
+static unsigned char native_take_key(void){++takes;unsigned key=hardware_key;hardware_key=255;return key;}
 """
             + declarations
             + helpers
@@ -328,9 +344,12 @@ static unsigned char poll_hardware_key(void){unsigned key=hardware_key;hardware_
 int main(void){
  assert(native_poll_key()==255 && gets==0 && !blocked);
  hardware_key=42;assert(native_poll_key()==42 && gets==0 && !blocked);
- queue=MSG_KEYDOWN;assert(native_poll_key()==255 && gets==1 && !blocked);
- native_window_key(1);assert(blocked==1 && c6502_perf.waits==1);
- quit=1;assert(native_window_key(1)==0x2e);quit=0;
+ queue=MSG_KEYDOWN;assert(native_poll_key()==255 && queue==MSG_KEYDOWN);
+ queue=MSG_DT_KEYDOWN;assert(native_poll_key()==255 && queue==MSG_DT_KEYDOWN);
+ queue=0x13;assert(native_poll_key()==255 && queue==0x13);
+ native_window_key(1);assert(blocked==0 && c6502_perf.waits==1);
+ queue=MSG_USER;quit=1;assert(native_window_key(1)==255 && queue==MSG_USER);quit=0;
+ assert(gets==0 && !blocked && scans==7 && takes==7);
  return 0;
 }
 """
@@ -412,6 +431,8 @@ static unsigned frames;static void c6502_native_present(void){++frames;}
  native_timer_open(5);now=256;native_update_timer();
  /* One second: (10000-256)/90 + 1 = 109 IRQs, 21 messages, count=4. */
  assert(c6502_perf.timer_irqs==109 && c6502_perf.timer_steps==21 && ram[0x2018]==4);
+ assert(c6502_perf.timer_coalesced==20 && c6502_perf.timer_burst_max==21);
+ assert(c6502_perf.timer_update_max_gap_ticks==256);
  assert(native_timer_number()==5 && c6502_timer_remaining==66 && (ram[0x201e]&1));
  native_timer_close();unsigned count=ram[0x2018],remaining=c6502_timer_remaining;
  now+=10000;native_update_timer();assert(ram[0x2018]==count && c6502_timer_remaining==remaining);
@@ -739,6 +760,8 @@ typedef unsigned short c6502_u16;
 typedef unsigned int c6502_u32;
 static unsigned char ram[32768],host_frame[19200] __attribute__((aligned(4)));
 static struct {unsigned char *ram;} c6502_native_state={ram};
+static void guest_write(unsigned short address,unsigned char value);
+static void native_capture_keys(void){}
 #define C6502_FRAMEBUFFER host_frame
 #define C6502_FRAME_STRIDE 80u
 #define C6502_FRAME_HEIGHT 240u
@@ -791,6 +814,7 @@ int main(void){
         with tempfile.TemporaryDirectory(prefix="c6502-output-") as folder:
             c = Path(folder) / "output.c"
             exe = Path(folder) / "output.exe"
+            source += "\nstatic void guest_write(unsigned short a,unsigned char v){ram[a]=v;native_lcd_write(a);}\n"
             c.write_text(source, encoding="utf-8")
             subprocess.run([cc, "-O2", str(c), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
@@ -821,10 +845,11 @@ static unsigned char guest_read(unsigned short a){return ram[a];}
 static unsigned char stack8(unsigned *r,unsigned n){return ram[r[10]+n];}
 static unsigned short stack16(unsigned *r,unsigned n){return stack8(r,n)|(stack8(r,n+1)<<8);}
 static void native_picture(unsigned x,unsigned y,unsigned x1,unsigned y1,unsigned src,unsigned flag){
- assert(src==0x3000 && !flag);memcpy(lcd,ram+src,1920);copied=1;
+ assert(src==0x3000 && !flag);memcpy(lcd,ram+src,1920);memcpy(visible,lcd,1920);++copied;
 }
 static void c6502_native_present(void){assert(copied);memcpy(visible,lcd,1920);copied=0;++presents;}
 static void native_refresh_if_due(void){++due;}
+static void native_capture_keys(void){}
 static void native_text(unsigned x,unsigned y,const unsigned char*s){}
 static void line(unsigned x,unsigned y,unsigned x1,unsigned y1){}
 static void rectangle(unsigned x,unsigned y,unsigned x1,unsigned y1,int fill){}
@@ -845,16 +870,16 @@ int main(void){
  for(unsigned frame=0;frame<8;++frame){
   memset(ram+0x3000,frame*31,1920);
   api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicture);
-  assert(presents==frame+1 && !memcmp(visible,ram+0x3000,1920));
-  assert(!memcmp(r,saved,sizeof(r)) && c6502_last_frame_tick==100);
+  assert(copied==frame+1 && !presents && !memcmp(visible,ram+0x3000,1920));
+  assert(!memcmp(r,saved,sizeof(r)) && !c6502_last_frame_tick);
  }
  assert(c6502_perf.picture_frame_commits==8 && !due);
  /* Also accept the 160-pixel API width, not just Fumo's 159 pixels. */
- ram[0x1801]=159;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicture);assert(presents==9);
- /* A partial draw may refresh when due, but is not a forced frame commit. */
- r[4]=16;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicture);assert(presents==9&&due==1);
+ ram[0x1801]=159;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicture);assert(copied==9&&!presents);
+ /* Partial draws mirror their stores too, without a timer or whole-screen copy. */
+ r[4]=16;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicture);assert(copied==10&&!presents&&!due);
  /* Compositing to an off-screen page must not publish an unfinished frame. */
- r[4]=0;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicturedummy);assert(presents==9&&due==1);
+ r[4]=0;api_graphics(r,C6502_BRIDGE_c6502_adapter_syspicturedummy);assert(copied==10&&!presents&&!due);
  return 0;
 }
 """
@@ -946,7 +971,17 @@ typedef unsigned int c6502_u32;
 #define C6502_RESOURCE_SCRATCH_SIZE 1920u
 #define C6502_GUEST_STRIDE 20u
 static unsigned char ram[65536],c6502_resource_scratch[1920];
-static struct {unsigned char *ram;unsigned short banks[16];} c6502_native_state={ram};
+#define C6502_GAME_PHYSICAL_BASE 0x20d000u
+#define C6502_VIEW_Y 24u
+#define C6502_FRAME_STRIDE 80u
+static unsigned char fb[19200],c6502_previous_frame[1920],c6502_output_ready;
+static unsigned c6502_expand_2x[256];
+#define C6502_FRAMEBUFFER fb
+static struct {unsigned lcd_span_rows,lcd_span_bytes,mapped_lcd_bytes,framebuffer_bytes;
+ unsigned picture_direct_bytes,picture_staged_bytes,picture_ordered_calls;} c6502_perf;
+static void native_capture_keys(void){}
+static struct {unsigned char *ram;unsigned short banks[16];unsigned char *game;unsigned game_size;}
+ c6502_native_state={ram};
 static unsigned char guest_read(unsigned short a){return ram[a==0x400?0x1000:a];}
 static void guest_write(unsigned short a,unsigned char v){ram[a==0x400?0x1000:a]=v;}
 static unsigned char stack8(unsigned *r,unsigned n){return ram[(unsigned short)(r[10]+n)];}

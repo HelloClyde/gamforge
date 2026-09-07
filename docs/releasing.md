@@ -16,8 +16,8 @@ CI 自检使用程序生成的微型指令样本，不下载或编译商业游�
 3. 在准备发布的提交上创建并推送 tag：
 
 ```shell
-git tag v0.1.0
-git push origin v0.1.0
+git tag -a v1.0.0 -m "A 系列 9288 翻译器 1.0.0"
+git push origin v1.0.0
 ```
 
 tag 版本必须与两处元数据完全一致。tag build 再次测试并构建，成功后 release job

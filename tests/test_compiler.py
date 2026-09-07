@@ -277,7 +277,7 @@ class StaticNativeCompilerTest(unittest.TestCase):
         self.assertIn("i = r[1]; result = r[2];", case)
         self.assertNotIn("result = r[1]; i = r[2];", case)
 
-    def test_native_sysgetkey_uses_nonblocking_window_input(self) -> None:
+    def test_native_sysgetkey_queries_matrix_without_host_messages(self) -> None:
         runtime = (DATA / "runtime" / "c6502_native_runtime.c").read_text(encoding="utf-8")
         helper = runtime.split("static void api_get_key", 1)[1].split(
             "static void api_graphics", 1
@@ -286,11 +286,16 @@ class StaticNativeCompilerTest(unittest.TestCase):
         poll = runtime.split("static c6502_u8 native_window_key", 1)[1].split(
             "static c6502_u8 translate_key", 1
         )[0]
-        self.assertIn("fnGUI_HavePendingMessage(window)", poll)
-        self.assertIn("fnGUI_GetMessage(&message, window)", poll)
-        self.assertNotIn("fnGUI_PostMessage", poll)
-        self.assertIn("poll_hardware_key()", poll)
-        self.assertIn("if (!wait && !fnGUI_HavePendingMessage(window)) goto done;", poll)
+        for api in (
+            "GetMessage",
+            "HavePendingMessage",
+            "DispatchMessage",
+            "TranslateMessage",
+            "PostMessage",
+        ):
+            self.assertNotIn("fnGUI_" + api, poll)
+        self.assertIn("native_capture_keys()", poll)
+        self.assertIn("native_take_key()", poll)
         self.assertIn("native_window_key(0)", poll)
         self.assertIn("Real SysGetKey is non-blocking", helper)
         self.assertIn("return8(r, key);", helper)

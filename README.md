@@ -22,7 +22,7 @@
 ## 快速开始（Windows）
 
 1. 从 [Releases](https://github.com/HelloClyde/a-series-9288-translator/releases) 下载 Windows ZIP，
-   **完整解压**，运行 `A9288-Converter.exe`。尚未打发布 tag 时，可从成功的 Actions 下载构建产物。
+   **完整解压**，运行 `A9288-Converter.exe`。当前正式版本为 [v1.0.0](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.0.0)。
 2. 在“编译环境”中配置：9288 SDK、修正过 9288 ABI 的 S1C33 LLVM 工具链、A 系列 `8.BIN` 和 `E.BIN`。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
 4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动。
@@ -95,7 +95,10 @@ docs/                架构、兼容性、发布和维护说明
 在未知调用处静默退回解释器。图片、文字、输入、计时等由共享原生运行库适配。
 PC 启动准备阶段仍使用参考核心生成初始 RAM/寄存器状态，它不参与真机运行。
 
-已有《伏魔记》和《魔塔之怀旧终曲》的局部功能验证。不同游戏、SDK 和固件版本可能
+已有《伏魔记》《魔塔之怀旧终曲》和《三国霸业》的局部功能验证与真机反馈。
+1.0 包含直接 framebuffer 输出、行批量绘图、私有键盘轮询、退出恢复及 Timer 时钟回退防护；
+本轮 CLOCK-GUARD-1 已通过模拟器故障注入，长期真机稳定性仍需持续验证。
+不同游戏、SDK 和固件版本可能
 存在不兼容；请参阅 [架构与限制](docs/architecture.md)。未知适配入口、未恢复的调用、
 超过当前 1 MiB 限制的 KF2 会使构建失败，不代表所有其他输入均已正确翻译。
 

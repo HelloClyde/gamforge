@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a-series-9288-translator"
-version = "0.1.0"
+version = "1.0.0"
 description = "Offline native C6502 GAM to BBK 9288 S1C33/KF2 compiler with a desktop GUI"
 readme = "README.md"
 requires-python = ">=3.11"

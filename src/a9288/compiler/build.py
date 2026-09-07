@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from a9288.app_options import c_name_definition, default_app_name, encode_app_name, write_icons
 from a9288.compiler import kf2 as build_9288
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
+from a9288.compiler.fast_helpers import fast_helper
 from a9288.paths import DATA, WORK, child_environment, task_command
 
 
@@ -105,7 +107,9 @@ def symbol_address(register: str, symbol: str) -> list[str]:
     ]
 
 
-def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
+def generate_bridges(
+    symbols: list[str], output: Path, profile_other: bool = False
+) -> tuple[Path, Path]:
     unsupported = sorted(set(symbols) - set(SUPPORTED_BRIDGES))
     if unsupported:
         raise ValueError(
@@ -127,6 +131,12 @@ def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
     for symbol in symbols:
         if symbol in bridge_ids:
             enum_lines.append(f"#define C6502_NEEDS_{symbol} 1")
+    enum_lines.append(f"#define C6502_BRIDGE_COUNT {len(bridge_ids) + 1}u")
+    if profile_other:
+        enum_lines.append("static const char *const c6502_profile_names[] = {")
+        enum_lines.append('    "session",')
+        enum_lines.extend(f'    "{symbol}",' for symbol in bridge_ids)
+        enum_lines.append("};")
     enum_lines.extend(["#endif", ""])
     header.write_text("\n".join(enum_lines), encoding="utf-8")
 
@@ -156,7 +166,13 @@ def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
             if register:
                 body.append(f"    ext {register * 4}")
             body.append(f"    ld.w [%r3], %r{register}")
-        body += ["    ld.w %r11, [%sp+0]", "    ext 12", "    ld.w [%r3], %r11", "    pushn %r3"]
+        body += ["    ld.w %r11, [%sp+0]", "    ext 12", "    ld.w [%r3], %r11"]
+        if profile_other:
+            # R8 has already been saved. Before PUSHN, SP+4 is the native
+            # return PC (SP+0 contains original R3). Never guess a C frame
+            # layout or scan arbitrary stack memory for return addresses.
+            body.append("    ld.w %r8, [%sp+4]")
+        body.append("    pushn %r3")
         low = ident & 0x3F
         shown_low = low if low < 32 else low - 64
         # Guest Y/SP were saved above.  GNU33 uses R6/R7 for host arguments,
@@ -167,7 +183,11 @@ def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
         body.append(f"    ld.w %r7, {shown_low}")
         # Interrupts remain enabled in the native app. R15 MUST keep the
         # firmware DP even between C calls; it is not a guest scratch reg.
-        body.append("    call c6502_native_bridge")
+        body.append(
+            "    call c6502_native_bridge_profiled"
+            if profile_other
+            else "    call c6502_native_bridge"
+        )
         return body
 
     def reload_registers() -> list[str]:
@@ -223,6 +243,18 @@ def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
             # These ordinary-looking RAM addresses have required firmware
             # post-write values in the existing player compatibility model.
             result += [
+                # $0401-$1000 contains folded LCD RAM. It must reach the
+                # mirrored framebuffer store, including $0ff3/$1000.
+                # Padding in this range is filtered by the C adapter.
+                "    cmp %r0, 4",
+                f"    jrult .Lbridge_not_lcd_{ident}",
+                "    ext 64",
+                "    ld.w %r0, 0",  # $1000 inclusive
+                "    cmp %r12, %r0",
+                f"    jrule {slow}",
+                f".Lbridge_not_lcd_{ident}:",
+                "    ld.w %r0, %r12",
+                "    srl %r0, 8",
                 "    cmp %r0, 3",  # read-only firmware page $0300
                 f"    jreq {slow}",
                 "    ext 8",
@@ -258,7 +290,12 @@ def generate_bridges(symbols: list[str], output: Path) -> tuple[Path, Path]:
 
     for symbol in symbols:
         ident = bridge_ids[symbol]
-        fast_prefix = fast_dynamic_ram_prefix(symbol, ident)
+        fast_prefix, complete = fast_helper(symbol, ident)
+        if complete:
+            lines.extend(fast_prefix)
+            continue
+        if not fast_prefix:
+            fast_prefix = fast_dynamic_ram_prefix(symbol, ident)
         lines.extend(fast_prefix)
         if fast_prefix:
             # The public symbol and type were emitted by the fast prefix; the
@@ -338,6 +375,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--app-name")
     parser.add_argument("--icon", type=Path)
+    parser.add_argument(
+        "--profile-other",
+        action="store_true",
+        help="diagnostic native-boundary and sampled helper attribution",
+    )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
@@ -390,7 +432,7 @@ def main() -> None:
             "Unresolved FAR call in native game: recover its target "
             "before linking; no silent no-op/fallback is permitted."
         )
-    header, bridge_s = generate_bridges(external, runtime_build)
+    header, bridge_s = generate_bridges(external, runtime_build, args.profile_other)
     print("[GAM9288_STAGE] runtime|编译公共运行库与程序元数据", flush=True)
 
     flags = [
@@ -420,6 +462,8 @@ def main() -> None:
         str(config),
     ]
     objects = [combined]
+    if args.profile_other:
+        flags.append("-DC6502_PROFILE_OTHER=1")
     for source in (
         DATA / "runtime" / "c6502_native_9288_start.c",
         DATA / "runtime" / "c6502_native_9288.c",
@@ -463,6 +507,29 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(app)
     digest = hashlib.sha256(app).hexdigest()
+    if args.profile_other:
+        symbols = []
+        symbol_text = subprocess.check_output([readelf, "-s", str(elf)], text=True)
+        for line in symbol_text.splitlines():
+            match = re.match(
+                r"\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+\S+\s+\S+\s+\S+\s+(\S+)", line
+            )
+            if match:
+                symbols.append(
+                    {"address": int(match[1], 16), "size": int(match[2]), "name": match[3]}
+                )
+        args.output.with_suffix(".profile-symbols.json").write_text(
+            json.dumps(
+                {
+                    "build": "OTHER-PROFILE-1",
+                    "exe_sha256": digest,
+                    "game_sha256": hashlib.sha256(args.game.read_bytes()).hexdigest(),
+                    "symbols": sorted(symbols, key=lambda item: item["address"]),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     print(f"KF2: {args.output.resolve()} ({len(app)} bytes)")
     print(f"SHA256: {digest}")
     print(f"guest external bridge symbols: {len(external)}")

@@ -71,6 +71,8 @@ def convert(args) -> None:
     )
     if args.icon:
         command += ["--icon", str(args.icon.resolve())]
+    if getattr(args, "profile_other", False):
+        command.append("--profile-other")
     print("+", " ".join(command), flush=True)
     subprocess.run(command, env=child_environment(), check=True)
     size = staged.stat().st_size
@@ -96,6 +98,7 @@ def convert(args) -> None:
             "runtime_interpreter_fallback": False,
             "bridge_contract": "explicit-native-case-required",
             "host_sdk_abi": "9288-gnu33-r6-r9-return-r4-reserved-r15",
+            "profile_other": bool(getattr(args, "profile_other", False)),
             "output_elf": str(output.with_suffix(".elf")),
             "output_map": str(output.with_suffix(".map")),
             "sdk": str(sdk),
@@ -108,6 +111,10 @@ def convert(args) -> None:
     print("[GAM9288_STAGE] verify|校验体积并保存转换结果", flush=True)
     for suffix in (".elf", ".map", ".report.json", ".exe"):
         publish_file(staged.with_suffix(suffix), output.with_suffix(suffix))
+    if getattr(args, "profile_other", False):
+        publish_file(
+            staged.with_suffix(".profile-symbols.json"), output.with_suffix(".profile-symbols.json")
+        )
     print(f"KF2: {output} ({size} bytes)\nSHA256: {digest}", flush=True)
     print(f"report: {output.with_suffix('.report.json')}", flush=True)
 
@@ -120,6 +127,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--app-name", help="9288 桌面和窗口名称，最多 15 个 GBK 字节")
     parser.add_argument("--icon", type=Path, help="PNG/JPEG/BMP/ICO 图片，自动转换四灰阶图标")
+    parser.add_argument(
+        "--profile-other",
+        action="store_true",
+        help="添加原生调用区间及运行库抽样耗时日志（诊断版）",
+    )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)

@@ -30,7 +30,9 @@
 #define C6502_KEY_IRQ_FACTOR_ADDRESS (C6502_IO_BASE + 0x0280u)
 #define C6502_KEY_ROW_SELECT_ADDRESS 0x00300f46u
 #define C6502_PSR_IE 0x10u
-#define C6502_FRAME_TICKS 6u
+/* Only audit unsolicited firmware repaint at input/wait checkpoints.
+   Drawing itself maps LCD writes immediately; this is NOT a frame timer. */
+#define C6502_FRAME_TICKS 64u
 /* Original A4980 timer input: one source tick per 400 cycles at 4 MHz.
    ST1LD determines the IRQ period; SysTimer1Open selects IRQs per message. */
 #define C6502_TIMER_SOURCE_HZ 10000u
@@ -79,17 +81,13 @@ static c6502_u8 c6502_text_surface[80u * 240u]
     (*(__typeof__(tpDL_GUITable->member) *)(void *)( \
         (c6502_u8 *)tpDL_GUITable + \
         __builtin_offsetof(T_GUI_RelocationTable, member) + 0x14u))
-static c6502_u8 c6502_key_previous[8];
-static c6502_u8 c6502_key_initialized;
-static c6502_u32 c6502_key_scan_tick, c6502_key_repeat_tick;
-static c6502_u8 c6502_key_repeat = 0xffu;
-static c6502_u8 c6502_key_repeating;
 static c6502_u32 c6502_last_frame_tick;
 static c6502_u32 c6502_timer_clock;
 static c6502_u32 c6502_timer_fraction;
 static c6502_u32 c6502_timer_remaining;
 static c6502_u8 c6502_timer_pending;
 static c6502_u8 c6502_frame_valid;
+static c6502_u8 c6502_output_ready;
 static c6502_u8 c6502_previous_frame[1920];
 static c6502_u32 c6502_expand_2x[256];
 typedef struct C6502_Glyph {
@@ -108,6 +106,15 @@ typedef struct C6502_Perf {
     c6502_u32 picture_frame_commits;
     c6502_u32 msgbox_calls, msgbox_ticks, msgbox_wait_ticks;
     c6502_u32 msgbox_last_timeout, msgbox_last_y, msgbox_last_height;
+    c6502_u32 mapped_lcd_bytes, framebuffer_bytes, repair_checks;
+    c6502_u32 lcd_span_rows, lcd_span_bytes;
+    c6502_u32 picture_direct_bytes, picture_staged_bytes, picture_ordered_calls;
+    c6502_u32 key_scans, key_scan_max_gap_ticks, key_edges, key_repeats;
+    c6502_u32 keys_consumed, key_queue_peak, key_queue_overflows;
+    c6502_u32 timer_messages_delivered, key_messages_delivered;
+    c6502_u32 timer_coalesced, timer_update_max_gap_ticks, timer_burst_max;
+    c6502_u32 timer_key_deferrals, timer_key_yields;
+    c6502_u32 timer_backward_rejected, timer_advance_chunks, timer_advance_chunks_max;
 } C6502_Perf;
 static C6502_Perf c6502_perf;
 static c6502_u32 native_clock(void);
@@ -122,6 +129,41 @@ static void bytes_copy(c6502_u8 *out, const c6502_u8 *in, c6502_u32 size)
 {
     while (size--)
         *out++ = *in++;
+}
+
+#include "c6502_native_timing.h"
+#ifdef C6502_PROFILE_OTHER
+#include "c6502_native_profile.h"
+#endif
+
+static void native_timing_frame(c6502_u32 kind, c6502_u32 now, c6502_u32 draw)
+{
+    nt_frame(kind, now, draw, c6502_native_state.ram[0x227u],
+        (c6502_native_state.ram[0x226u] & 1u) ? c6502_native_state.ram[0x2019u] : 0u,
+        c6502_perf.timer_steps,
+        c6502_perf.timer_messages_delivered, c6502_perf.timer_coalesced);
+}
+
+/* Input checkpoint after LCD activity, NOT a guessed game frame. */
+static c6502_u32 native_timing_input_begin(void)
+{
+    c6502_u32 now = nt_enter(native_clock());
+    if (c6502_perf.mapped_lcd_bytes != c6502_timing.lcd_checkpoint) {
+        c6502_timing.lcd_checkpoint = c6502_perf.mapped_lcd_bytes;
+        native_timing_frame(2u, now, 0u);
+    }
+    return now;
+}
+
+static c6502_u32 native_graphics_phase(c6502_u32 id)
+{
+    if (id == C6502_BRIDGE_c6502_adapter_syspicture ||
+        id == C6502_BRIDGE_c6502_adapter_syspicturedummy) return NT_PICTURE;
+    if (id == C6502_BRIDGE_c6502_adapter_sysascii ||
+        id == C6502_BRIDGE_c6502_adapter_sysprintstring) return NT_TEXT;
+    if (id == C6502_BRIDGE_c6502_adapter_syssavescreen ||
+        id == C6502_BRIDGE_c6502_adapter_sysrestorescreen) return NT_SURFACE;
+    return NT_SHAPE;
 }
 
 static void native_heap_init(c6502_u16 begin, c6502_u16 size)
@@ -216,6 +258,8 @@ static c6502_u16 get16(c6502_u32 address)
 static void put16(c6502_u32 address, c6502_u16 value);
 static c6502_u8 guest_read(c6502_u16 address);
 static void guest_write(c6502_u16 address, c6502_u8 value);
+static void native_lcd_write(c6502_u16 address);
+static void native_capture_keys(void);
 static void set_nz(c6502_u32 *r, c6502_u8 value);
 
 /* $28/$29 are the C6502 compiler's software-stack pointer.  Direct native
@@ -330,6 +374,8 @@ static void physical_write(c6502_u32 address, c6502_u8 value)
 {
     if (address < C6502_RAM_SIZE) {
         c6502_native_state.ram[address] = value;
+        if (address > 0x400u && address <= 0x1000u)
+            native_lcd_write((c6502_u16)address);
     } else if (address >= C6502_GAME_PHYSICAL_BASE &&
                address - C6502_GAME_PHYSICAL_BASE <
                    c6502_native_state.game_size) {
@@ -404,6 +450,8 @@ static void guest_write(c6502_u16 address, c6502_u8 value)
         return;
     if (address < 0x4000u) {
         c6502_native_state.ram[address] = value;
+        if (address > 0x400u && address <= 0x1000u)
+            native_lcd_write(address);
         if (address == 0x21bu)
             c6502_native_state.ram[address] = 0u;
         if (address == 0x2028u)
@@ -581,10 +629,8 @@ static void pixel(c6502_u8 x, c6502_u8 y, int black)
         return;
     screen = c6502_native_state.ram + lcd_address(x >> 3, y);
     mask = (c6502_u8)(0x80u >> (x & 7u));
-    if (black)
-        *screen |= mask;
-    else
-        *screen &= (c6502_u8)~mask;
+    guest_write(lcd_address(x >> 3, y), black ? *screen | mask :
+        *screen & (c6502_u8)~mask);
 }
 
 static void horizontal_span(c6502_u8 x0, c6502_u8 x1, c6502_u8 y, int operation)
@@ -598,9 +644,9 @@ static void horizontal_span(c6502_u8 x0, c6502_u8 x1, c6502_u8 y, int operation)
         c6502_u8 *byte = c6502_native_state.ram + lcd_address(column, y);
         if (column == first) mask &= (c6502_u8)(0xffu >> (x0 & 7u));
         if (column == last) mask &= (c6502_u8)(0xffu << (7u - (x1 & 7u)));
-        if (operation == 0) *byte &= (c6502_u8)~mask;
-        else if (operation == 1) *byte |= mask;
-        else *byte ^= mask;
+        c6502_u8 value = operation == 0 ? *byte & (c6502_u8)~mask :
+            operation == 1 ? *byte | mask : *byte ^ mask;
+        guest_write(lcd_address(column, y), value);
     }
 }
 
@@ -684,14 +730,19 @@ void c6502_native_present(void)
                 ((shifted << 8) & 0xff0000u) | (shifted << 24);
         }
     }
-    /* Firmware may repaint its caption/status bands without notifying our
-       client area. Keep those OUTSIDE-game bands white on every submit. */
+    /* Full-screen reconciliation is reserved for startup, explicit paint
+       invalidation and low-rate firmware repaint audits. Unchanged words
+       are NOT resubmitted. This also detects writes without MSG_PAINT. */
     for (y = 0u; y < C6502_VIEW_Y; ++y)
-        for (x = 0u; x < C6502_FRAME_STRIDE; x += 4u)
-            *(volatile c6502_u32 *)(frame + y * C6502_FRAME_STRIDE + x) = 0xffffffffu;
+        for (x = 0u; x < C6502_FRAME_STRIDE; x += 4u) {
+            volatile c6502_u32 *out = (volatile c6502_u32 *)(frame + y * C6502_FRAME_STRIDE + x);
+            if (*out != 0xffffffffu) { *out = 0xffffffffu; c6502_perf.framebuffer_bytes += 4u; }
+        }
     for (y = C6502_VIEW_Y + C6502_GUEST_HEIGHT * 2u; y < C6502_FRAME_HEIGHT; ++y)
-        for (x = 0u; x < C6502_FRAME_STRIDE; x += 4u)
-            *(volatile c6502_u32 *)(frame + y * C6502_FRAME_STRIDE + x) = 0xffffffffu;
+        for (x = 0u; x < C6502_FRAME_STRIDE; x += 4u) {
+            volatile c6502_u32 *out = (volatile c6502_u32 *)(frame + y * C6502_FRAME_STRIDE + x);
+            if (*out != 0xffffffffu) { *out = 0xffffffffu; c6502_perf.framebuffer_bytes += 4u; }
+        }
     for (y = 0u; y < C6502_GUEST_HEIGHT; ++y) {
         c6502_u8 carry = 0xc0u;
         c6502_u8 row[20];
@@ -705,27 +756,72 @@ void c6502_native_present(void)
             dirty |= row[x] != c6502_previous_frame[y * 20u + x];
         }
         if (dirty) ++changed;
-        /* The GUI still shares this physical surface. A firmware/DMA
-           repaint need not change guest LCD RAM or send client MSG_PAINT.
-           Resubmit unchanged rows too; skipping them left stale/white
-           menus in the independent system test. Keep the dirty comparison
-           for metrics only, not as a physical-screen validity assertion. */
+        /* Compare actual host memory, not just the guest shadow: the GUI
+           can overwrite this surface independently of guest LCD writes. */
         for (x = 0u; x < C6502_GUEST_STRIDE; ++x) {
             c6502_u8 bits = row[x];
             c6502_u32 word = c6502_expand_2x[bits] | carry;
-            *(volatile c6502_u32 *)(upper + x * 4u) = word;
-            *(volatile c6502_u32 *)(lower + x * 4u) = word;
+            volatile c6502_u32 *a = (volatile c6502_u32 *)(upper + x * 4u);
+            volatile c6502_u32 *b = (volatile c6502_u32 *)(lower + x * 4u);
+            if (*a != word) { *a = word; c6502_perf.framebuffer_bytes += 4u; }
+            if (*b != word) { *b = word; c6502_perf.framebuffer_bytes += 4u; }
             c6502_previous_frame[y * 20u + x] = bits;
             carry = (bits & 1u) ? 0u : 0xc0u;
         }
     }
     c6502_frame_valid = 1u;
+    c6502_output_ready = 1u;
     c6502_perf.dirty_rows += changed;
     ++c6502_perf.submissions;
     c6502_perf.present_ticks += native_clock() - started;
 }
 
 void c6502_native_invalidate_screen(void) { c6502_frame_valid = 0u; }
+
+/* Mirror a real A-series LCD byte immediately, including physical/banked
+   aliases. Padding in its folded 32-byte rows is NOT visible memory.
+   The 159-pixel view is centred at host x=1: a byte spans one aligned word
+   plus two bits of its neighbour. Preserve both neighbour pixels and the
+   API's hidden 160th guest pixel. No clock read, frame copy or SDK call. */
+static void native_lcd_write(c6502_u16 address)
+{
+    c6502_u32 row, column, x, y, word;
+    c6502_u8 bits, carry;
+    volatile c6502_u8 *upper, *lower;
+    if (!c6502_output_ready || address <= 0x400u || address > 0x1000u) return;
+    if (address == 0x1000u) { x = 1u; y = 65u; }
+    else if (address == 0x0ff3u) { x = 0u; y = 65u; }
+    else {
+        row = (address - 0x400u) >> 5;
+        column = (address - 0x400u) & 31u;
+        if (column < 19u) {
+            x = column + 1u; y = row <= 65u ? 65u - row : row;
+        } else if (column == 19u) {
+            x = 0u; y = row < 65u ? 64u - row : row + 1u;
+        } else return;
+        if (y >= 96u) return;
+    }
+    bits = c6502_native_state.ram[address];
+    if (x == 19u) bits &= 0xfeu;
+    carry = x && (c6502_native_state.ram[lcd_address(x - 1u, y)] & 1u) ? 0u : 0xc0u;
+    word = c6502_expand_2x[bits] | carry;
+    upper = C6502_FRAMEBUFFER + (C6502_VIEW_Y + y * 2u) * C6502_FRAME_STRIDE + x * 4u;
+    lower = upper + C6502_FRAME_STRIDE;
+    *(volatile c6502_u32 *)upper = word;
+    *(volatile c6502_u32 *)lower = word;
+    if (x < 19u) {
+        carry = (bits & 1u) ? 0u : 0xc0u;
+        upper[4] = (upper[4] & 0x3fu) | carry;
+        lower[4] = (lower[4] & 0x3fu) | carry;
+        c6502_perf.framebuffer_bytes += 2u;
+    }
+    c6502_previous_frame[y * 20u + x] = bits;
+    ++c6502_perf.mapped_lcd_bytes;
+    c6502_perf.framebuffer_bytes += 8u;
+    /* Also sample within a full-screen blit, not just between drawing APIs.
+       The clock gate in capture limits actual matrix scans to 256 Hz. */
+    if (!(c6502_perf.mapped_lcd_bytes & 31u)) native_capture_keys();
+}
 
 static c6502_u8 map_key(T_UHWORD key)
 {
@@ -777,30 +873,26 @@ static void write_psr(c6502_u32 value)
     __asm__ volatile("ld.w %%psr,%0" : : "r"(value) : "memory");
 }
 
-static c6502_u8 poll_hardware_key(void)
+#include "c6502_native_input.h"
+#include "c6502_native_matrix.h"
+#include "c6502_native_exit.h"
+#include "c6502_native_clock.h"
+
+static void native_capture_keys(void)
 {
-    static const c6502_u8 key_map[8][7] = {
-        {0x31u, 0x10u, 0x18u, 0x21u, 0x32u, 0x00u, 0x2eu},
-        {0x08u, 0x11u, 0x19u, 0x22u, 0x33u, 0x07u, 0x2fu},
-        {0x09u, 0x12u, 0x1au, 0x23u, 0x34u, 0x01u, 0x3au},
-        {0x0au, 0x13u, 0x1bu, 0x24u, 0x0fu, 0x20u, 0x3bu},
-        {0x0bu, 0x14u, 0x1cu, 0x25u, 0x30u, 0x29u, 0x28u},
-        {0x0cu, 0x15u, 0x1du, 0x26u, 0xffu, 0x2du, 0x2eu},
-        {0x0du, 0x16u, 0x1eu, 0x27u, 0xffu, 0x36u, 0xffu},
-        {0x0eu, 0x17u, 0x1fu, 0x35u, 0x38u, 0x37u, 0x39u}
-    };
     c6502_u8 current[8];
     c6502_u8 saved_row;
     c6502_u8 saved_k5;
     c6502_u8 saved_port0;
     c6502_u8 saved_factors;
-    c6502_u8 result = 0xffu;
-    c6502_u8 held = 0xffu;
-    c6502_u32 now = native_clock();
+    c6502_u32 now;
     c6502_u32 saved_psr;
-    c6502_u32 row;
-    if (c6502_key_initialized && now == c6502_key_scan_tick) return 0xffu;
-    c6502_key_scan_tick = now;
+    if (!c6502_input_active) return;
+    /* Cheap fast gate for tight drawing/poll loops. A full-second gap can
+       defer a scan by at most one divider tick, never a whole second. */
+    if (c6502_key_initialized &&
+        *hardware_byte(C6502_CTM_DIVIDER_ADDRESS) == (c6502_u8)c6502_key_scan_tick) return;
+    now = native_clock();
     saved_psr = read_psr();
 
     /* The matrix registers are shared with the firmware ISR.  Mask IRQs
@@ -815,14 +907,7 @@ static c6502_u8 poll_hardware_key(void)
         (c6502_u8)(saved_k5 & ~0x0fu);
     *hardware_byte(C6502_PORT0_IOCTRL_ADDRESS) =
         (c6502_u8)(saved_port0 & ~0x70u);
-    for (row = 0u; row < 8u; ++row) {
-        *hardware_byte(C6502_KEY_ROW_SELECT_ADDRESS) =
-            (c6502_u8)~(1u << row);
-        current[row] = (c6502_u8)(
-            ((c6502_u8)~*hardware_byte(C6502_K5_DATA_ADDRESS) & 0x0fu) |
-            ((c6502_u8)~*hardware_byte(C6502_PORT0_DATA_ADDRESS) & 0x70u)
-        );
-    }
+    native_matrix_snapshot(current, now);
     *hardware_byte(C6502_KEY_ROW_SELECT_ADDRESS) = saved_row;
     *hardware_byte(C6502_K5_FUNCTION_ADDRESS) = saved_k5;
     *hardware_byte(C6502_PORT0_IOCTRL_ADDRESS) = saved_port0;
@@ -835,82 +920,99 @@ static c6502_u8 poll_hardware_key(void)
         *hardware_byte(C6502_KEY_IRQ_FACTOR_ADDRESS) & ~saved_factors & 0x30u);
     write_psr(saved_psr);
 
-    if (c6502_key_initialized) {
-        for (row = 0u; row < 8u; ++row) {
-            c6502_u32 column;
-            c6502_u8 pressed = (c6502_u8)(
-                current[row] & ~c6502_key_previous[row]);
-            for (column = 0u; column < 7u; ++column) {
-                c6502_u8 code = key_map[row][column];
-                if ((current[row] & (1u << column)) &&
-                    (code == 0x35u || (code >= 0x37u && code <= 0x39u))) held = code;
-                if ((pressed & (1u << column)) &&
-                    code != 0xffu && result == 0xffu) {
-                    result = code;
-                }
-            }
-        }
-    } else {
-        c6502_key_initialized = 1u;
-    }
-    for (row = 0u; row < 8u; ++row)
-        c6502_key_previous[row] = current[row];
-    if (held != c6502_key_repeat) {
-        c6502_key_repeat = held; c6502_key_repeat_tick = now;
-        c6502_key_repeating = 0u;
-    } else if (held != 0xffu && result == 0xffu &&
-        now - c6502_key_repeat_tick >= (c6502_key_repeating ? 20u : 80u)) {
-        result = held; c6502_key_repeat_tick = now; c6502_key_repeating = 1u;
-    }
-    if (result != 0xffu && c6502_validation_key_count < 32u) {
-        volatile c6502_u32 *t = c6502_validation_keys[c6502_validation_key_count++];
-        t[0] = 1u; t[1] = result;
-    }
-    return result;
+#ifdef C6502_PROFILE_OTHER
+    np_key(now); /* Observe the existing scan; do not trigger another one. */
+#endif
+    native_key_snapshot(current, now);
 }
 
 static c6502_u32 native_clock(void)
 {
     c6502_u32 attempt;
-    static c6502_u32 previous;
     for (attempt = 0u; attempt < 4u; ++attempt) {
         volatile c6502_u8 *ctm = hardware_byte(C6502_CTM_DIVIDER_ADDRESS);
+        c6502_u8 before = ctm[0];
         c6502_u8 hi = ctm[5], lo = ctm[4], hour = ctm[3];
         c6502_u8 minute = ctm[2], second = ctm[1], divider = ctm[0];
-        if (second != ctm[1] || minute != ctm[2] || hour != ctm[3] ||
+        c6502_u32 candidate;
+        if (divider < before ||
+            second != ctm[1] || minute != ctm[2] || hour != ctm[3] ||
             lo != ctm[4] || hi != ctm[5] ||
-            second >= 60u || minute >= 60u || hour >= 24u) continue;
-        previous = (((((c6502_u32)hi << 8) | lo) * 86400u +
+            second >= 60u || minute >= 60u || hour >= 24u) {
+            ++c6502_clock_diagnostics.snapshot_retries;
+            continue;
+        }
+        candidate = (((((c6502_u32)hi << 8) | lo) * 86400u +
             hour * 3600u + minute * 60u + second) << 8) | divider;
-        break;
+        if (native_clock_accept(candidate)) return candidate;
     }
-    return previous;
+    /* Never manufacture elapsed time out of a torn/backwards snapshot.
+       Retry on the next call; do not busy-wait for the clock to recover. */
+    ++c6502_clock_diagnostics.exhausted;
+    return c6502_clock_previous;
+}
+
+void c6502_native_finish_input(void)
+{
+    T_GUI_HWND window = c6502_native_state.window;
+    c6502_u32 released_at = 0u;
+    c6502_u32 quiet_timers = 0u;
+    c6502_u8 releasing = 0u;
+    /* Physical release alone is not a firmware-input barrier. Keep focus
+       while the host drains its keyboard state, for at least 125 ms and
+       two of our own GUI timer messages. Any key traffic restarts it.
+       No global queue flush, key synthesis, or firmware RAM reset. */
+    while (window) {
+        c6502_u32 row, down = 0u, pending = 32u, now;
+        T_GUI_Msg message;
+        native_capture_keys();
+        now = c6502_key_scan_tick;
+        for (row = 0u; row < 8u; ++row) down |= c6502_key_previous[row];
+        if (down) { releasing = 0u; quiet_timers = 0u; }
+        else if (!releasing) {
+            releasing = 1u; released_at = now; quiet_timers = 0u;
+        }
+        /* Unlike gameplay polling, teardown must enter the real message
+           pump even when its queue is empty. HavePendingMessage only
+           inspects queued flags; it does not advance host input/timers.
+           App_Main keeps timer #1 alive until this function returns. */
+        do {
+            if (!fnGUI_GetMessage(&message, window)) goto finished;
+            if (native_is_key_message(message.message)) {
+                released_at = now; quiet_timers = 0u;
+            } else if (releasing && message.hWnd == window &&
+                message.message == MSG_TIMER && message.wParam == 1u) {
+                if (quiet_timers < 2u) ++quiet_timers;
+            }
+            native_dispatch_teardown(&message);
+        } while (--pending && fnGUI_HavePendingMessage(window));
+        /* Check after draining, not before: a late KEYUP/CHAR in this batch
+           must not escape because the physical quiet interval just ended. */
+        if (releasing && now - released_at >= 32u && quiet_timers >= 2u &&
+            !fnGUI_HavePendingMessage(window)) break;
+    }
+finished:
+    c6502_input_active = 0u;
+    c6502_key_head = c6502_key_count = c6502_timer_key_deferred = 0u;
 }
 
 static c6502_u8 native_window_key(int wait)
 {
-    T_GUI_Msg message;
-    c6502_u32 pending = 32u;
-    T_GUI_HWND window = c6502_native_state.window;
     c6502_u32 started = native_clock();
-    c6502_u8 result = 0xffu;
-    if (!window) return poll_hardware_key();
-    /* Matrix edges are the single input source, so a later firmware
-       KEYDOWN cannot duplicate an already consumed Enter/Exit. Pump only
-       available GUI traffic during SysGetKey; never manufacture messages
-       to force GetMessage, since that bypasses V1.5 input collection. */
-    result = poll_hardware_key();
-    if (result != 0xffu) goto done;
-    if (!wait && !fnGUI_HavePendingMessage(window)) goto done;
-    do {
-        if (!fnGUI_GetMessage(&message, window)) { result = 0x2eu; break; }
-        /* The A-series adapter consumes scan codes, not translated host
-           MSG_CHAR events. Keep all other window traffic in its own queue. */
-        if (message.message != MSG_KEYDOWN && message.message != MSG_KEYUP && message.message != MSG_CHAR)
-            fnGUI_DispatchMessage(&message);
-    } while (pending-- && fnGUI_HavePendingMessage(window));
-    if (result == 0xffu) result = poll_hardware_key();
-done:
+    c6502_u8 result;
+    /* Gameplay owns its input: matrix snapshot -> local FIFO, exactly one
+       consumption per query. Never inspect, translate, dispatch or wait on
+       9288 GUI messages here, even if a host key/close message is pending.
+       The guest GuiGetMsg wait loop uses this same nonblocking primitive;
+       its Timer events come from native_update_timer's hardware clock. */
+    native_capture_keys();
+    result = native_take_key();
+    if (result != 0xffu)
+        native_key_trace(wait ? 3u : 2u, result, native_clock());
+    if (result != 0xffu && c6502_validation_key_count < 32u) {
+        volatile c6502_u32 *t = c6502_validation_keys[c6502_validation_key_count++];
+        t[0] = 1u; t[1] = result;
+    }
     if (wait) { ++c6502_perf.waits; c6502_perf.wait_ticks += native_clock() - started; }
     else { ++c6502_perf.polls; c6502_perf.poll_ticks += native_clock() - started; }
     return result;
@@ -922,16 +1024,31 @@ static void native_update_timer(void)
 {
     c6502_u32 now = native_clock();
     c6502_u32 elapsed = now - c6502_timer_clock;
+    c6502_u32 chunks = 0u;
     c6502_u8 *ram = c6502_native_state.ram;
+    /* Independent of the reader guard: do not rebase on a negative delta.
+       -1 tick used to execute 65536 catch-up chunks and block input for
+       seconds. A genuine u32 wrap still has a small positive delta. */
+    if (elapsed & 0x80000000u) {
+        ++c6502_perf.timer_backward_rejected;
+        return;
+    }
     c6502_timer_clock = now;
     if (!(ram[0x226u] & 1u)) return;
+    if (elapsed > c6502_perf.timer_update_max_gap_ticks)
+        c6502_perf.timer_update_max_gap_ticks = elapsed;
     while (elapsed) {
-        c6502_u32 chunk = elapsed > 65536u ? 65536u : elapsed;
-        c6502_u32 source = chunk * C6502_TIMER_SOURCE_HZ + c6502_timer_fraction;
+        /* Split whole seconds from the fraction before multiplying. At
+           10000 Hz each chunk produces <= 2621440000 source ticks, so all
+           math fits u32 without target 64-bit helpers. Even the largest
+           valid elapsed time now takes <= 32 chunks, not 32768. */
+        c6502_u32 chunk = elapsed > 0x04000000u ? 0x04000000u : elapsed;
+        c6502_u32 partial = (chunk & 255u) * C6502_TIMER_SOURCE_HZ + c6502_timer_fraction;
+        c6502_u32 source = (chunk >> 8) * C6502_TIMER_SOURCE_HZ + (partial >> 8);
         c6502_u32 period = 256u - ram[0x227u], irqs, first, count, number;
+        ++chunks;
         elapsed -= chunk;
-        c6502_timer_fraction = source & 255u;
-        source >>= 8;
+        c6502_timer_fraction = partial & 255u;
         if (source < c6502_timer_remaining) {
             c6502_timer_remaining -= source;
             continue;
@@ -947,11 +1064,21 @@ static void native_update_timer(void)
         if (irqs < first) { ram[0x2018u] = (c6502_u8)(count + irqs); continue; }
         irqs -= first;
         if (!number) number = 1u;
-        c6502_perf.timer_steps += 1u + irqs / number;
+        {
+            c6502_u32 produced = 1u + irqs / number;
+            c6502_u32 already_pending = c6502_timer_pending || (ram[0x201eu] & 1u);
+            c6502_perf.timer_steps += produced;
+            c6502_perf.timer_coalesced += produced - (already_pending ? 0u : 1u);
+            if (produced > c6502_perf.timer_burst_max)
+                c6502_perf.timer_burst_max = produced;
+        }
         ram[0x2018u] = (c6502_u8)(irqs % number);
         ram[0x201eu] |= 1u;
         c6502_timer_pending = 1u; /* ROM has one pending bit, not a queue. */
     }
+    c6502_perf.timer_advance_chunks += chunks;
+    if (chunks > c6502_perf.timer_advance_chunks_max)
+        c6502_perf.timer_advance_chunks_max = chunks;
 }
 
 static void native_timer_open(c6502_u8 number)
@@ -983,8 +1110,9 @@ static void native_refresh_if_due(void)
 {
     c6502_u32 now = native_clock();
     c6502_u32 elapsed = now - c6502_last_frame_tick;
-    if (elapsed < C6502_FRAME_TICKS) return;
-    c6502_last_frame_tick += (elapsed / C6502_FRAME_TICKS) * C6502_FRAME_TICKS;
+    if (c6502_frame_valid && elapsed < C6502_FRAME_TICKS) return;
+    c6502_last_frame_tick = now;
+    ++c6502_perf.repair_checks;
     c6502_native_present();
 }
 
@@ -1058,23 +1186,37 @@ static void api_get_message(c6502_u32 *r)
 {
     c6502_u16 pointer = stack16(r, 0u);
     c6502_u8 *guest = c6502_native_state.ram + pointer;
-    c6502_u8 key = native_poll_key();
+    c6502_u8 key;
     for (;;) {
         native_update_timer();
+        native_capture_keys();
         native_refresh_if_due();
+        /* ROM gives Timer first priority. Keep that first decision, but
+           prevent native-host overload from starving an already captured
+           key forever: after THIS FIFO head has yielded to one timer,
+           deliver it on the next query, leaving the timer pending. Taking
+           a key through SysGetKey also resets the deferred-head token. */
+        if (c6502_timer_pending || (c6502_native_state.ram[0x201eu] & 1u)) {
+            if (c6502_key_count && c6502_timer_key_deferred) {
+                ++c6502_perf.timer_key_yields;
+            } else {
+                c6502_timer_key_deferred = c6502_key_count != 0u;
+                if (c6502_timer_key_deferred) ++c6502_perf.timer_key_deferrals;
+                ++c6502_perf.timer_messages_delivered;
+                c6502_timer_pending = 0u;
+                c6502_native_state.ram[0x201eu] &= 0xfeu;
+                guest[0] = 6u; guest[1] = 0u; guest[2] = 0u;
+                return8(r, 1u);
+                return;
+            }
+        }
+        key = native_window_key(1);
         if (key != 0xffu) {
+            ++c6502_perf.key_messages_delivered;
             guest[0] = 1u; guest[1] = key; guest[2] = 0u;
             return8(r, 1u);
             return;
         }
-        if (c6502_timer_pending || (c6502_native_state.ram[0x201eu] & 1u)) {
-            c6502_timer_pending = 0u;
-            c6502_native_state.ram[0x201eu] &= 0xfeu;
-            guest[0] = 6u; guest[1] = 0u; guest[2] = 0u;
-            return8(r, 1u);
-            return;
-        }
-        key = native_window_key(1);
     }
 }
 
@@ -1106,6 +1248,68 @@ static void set_screen_bit(
         value ? (c6502_u8)(byte | mask) : (c6502_u8)(byte & ~mask));
 }
 
+/* A validated packed row already identifies its LCD coordinates. Do not
+   send every byte through guest_write -> inverse LCD mapping -> neighbour
+   repair. Fold the guest addresses once, carry the shifted host edge from
+   the preceding byte, and repair only the rightmost neighbour. This is an
+   immediate row writer, NOT a deferred present or an atomic game frame.
+   Source must not alias the destination: callers snapshot or prove that. */
+static void native_lcd_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
+    const c6502_u8 *source, c6502_u8 left_mask, c6502_u8 right_mask)
+{
+    c6502_u8 *ram = c6502_native_state.ram;
+    c6502_u32 count = last - first + 1u, remaining = count, column = first;
+    c6502_u32 zero = lcd_address(0u, y), base = lcd_address(2u, y) - 2u;
+    c6502_u8 row[20], *in = row, *end = row + count;
+    c6502_u8 *previous;
+    c6502_u32 carry = 0xc0u;
+    volatile c6502_u32 *out;
+    ++c6502_perf.lcd_span_rows;
+    c6502_perf.lcd_span_bytes += count;
+    /* Only the two edges need masks. A tiny snapshot also keeps the host
+       expansion loop free of guest addressing, masks and row-65 branches. */
+    while (in != end) *in++ = *source++;
+    if (left_mask != 0xffu)
+        row[0] = (ram[lcd_address(first, y)] & ~left_mask) | (row[0] & left_mask);
+    if (right_mask != 0xffu)
+        row[count - 1u] = (ram[lcd_address(last, y)] & ~right_mask) |
+            (row[count - 1u] & right_mask);
+    in = row;
+    if (!column) { ram[zero] = *in++; ++column; --remaining; }
+    if (remaining && y == 65u && column == 1u) {
+        ram[0x1000u] = *in++; ++column; --remaining;
+    }
+    if (remaining) {
+        c6502_u8 *destination = ram + base + column;
+        while (in != end) *destination++ = *in++;
+    }
+    /* Hidden x=159 is masked only AFTER storing the exact guest RAM. */
+    if (c6502_output_ready) {
+        if (last == 19u) row[count - 1u] &= 0xfeu;
+        if (first) carry = ((c6502_u32)(ram[lcd_address(first - 1u, y)] & 1u) - 1u) & 0xc0u;
+        previous = c6502_previous_frame + y * 20u + first;
+        out = (volatile c6502_u32 *)(C6502_FRAMEBUFFER +
+            (C6502_VIEW_Y + y * 2u) * C6502_FRAME_STRIDE + first * 4u);
+        in = row;
+        do {
+            c6502_u32 bits = *in++, word = c6502_expand_2x[bits] | carry;
+            out[0] = word; out[C6502_FRAME_STRIDE / 4u] = word;
+            ++out; *previous++ = (c6502_u8)bits;
+            carry = ((bits & 1u) - 1u) & 0xc0u;
+        } while (in != end);
+        if (last < 19u) {
+            volatile c6502_u8 *edge = (volatile c6502_u8 *)out;
+            edge[0] = (edge[0] & 0x3fu) | carry;
+            edge[C6502_FRAME_STRIDE] = (edge[C6502_FRAME_STRIDE] & 0x3fu) | carry;
+            c6502_perf.framebuffer_bytes += 2u;
+        }
+        c6502_perf.mapped_lcd_bytes += count;
+        c6502_perf.framebuffer_bytes += count * 8u;
+        /* At most 20 guest bytes between checkpoints, without a GUI pump. */
+        native_capture_keys();
+    }
+}
+
 /* Merge one packed row by destination bytes, including unaligned edges.
    Unlike the ROM's special single-byte picture path, glyphs always mask
    their padding. Callers retain that picture quirk before reaching here. */
@@ -1114,6 +1318,14 @@ static void blit_packed_row(c6502_u16 screen, c6502_u8 x0, c6502_u8 y,
 {
     c6502_u32 first = x0 >> 3, last = (x0 + width - 1u) >> 3;
     c6502_u32 shift = x0 & 7u, stride = (width + 7u) >> 3, column;
+    /* Promote byte-aligned rows first. Keep the established unaligned
+       loop below: it preserves the ROM masks without another shifted-row
+       temporary / variable-shift loop on the S1C33 backend. */
+    if (screen == 0x400u && !shift) {
+        native_lcd_span(first, last, y, row, 0xffu,
+            (c6502_u8)(0xffu << (7u - ((x0 + width - 1u) & 7u))));
+        return;
+    }
     for (column = first; column <= last; ++column) {
         c6502_u32 i = column - first;
         c6502_u8 bits = i < stride ? row[i] >> shift : 0u;
@@ -1254,12 +1466,52 @@ static void native_text(c6502_u8 x, c6502_u8 y,
 
 static int picture_source_disjoint(c6502_u16 source, c6502_u32 size)
 {
-    c6502_u32 end = (c6502_u32)source + size, page;
+    c6502_u32 end = (c6502_u32)source + size, cursor;
+    if (!size) return 0;
     if (source >= 0x1001u && end <= 0x4000u) return 1;
     if (source < 0x4000u || end > 0x10000u) return 0;
-    for (page = source >> 12; page <= (end - 1u) >> 12; ++page)
-        if (c6502_native_state.banks[page] < 8u) return 0;
+    for (cursor = source; cursor < end;) {
+        c6502_u32 next = (cursor | 0xfffu) + 1u;
+        c6502_u32 physical = ((c6502_u32)c6502_native_state.banks[cursor >> 12] << 12) |
+            (cursor & 0xfffu);
+        if (next > end) next = end;
+        /* Low-numbered banks include ordinary off-screen RAM, not just
+           LCD aliases. Check the actual physical span against the LCD
+           envelope; $4800 -> bank 4:$0800 is safe, bank 0:$0800 is not.
+           Banked physical_read does not execute virtual DATA/I/O reads. */
+        if (physical < 0x1001u && physical + next - cursor > 0x400u) return 0;
+        cursor = next;
+    }
     return 1;
+}
+
+/* Resolve the whole read-only-for-this-call resource span, not each pixel
+   or byte. Never assume bank windows are contiguous, ROM is immutable, or
+   $0000..$0003 reads are ordinary RAM. NULL retains the generic read path. */
+static const c6502_u8 *picture_direct_source(c6502_u16 source, c6502_u32 size)
+{
+    c6502_u32 end = (c6502_u32)source + size, page, physical, offset;
+    if (!size) return 0;
+    if (source >= 0x1001u && end <= 0x4000u)
+        return c6502_native_state.ram + source;
+    if (source < 0x4000u || end > 0x10000u) return 0;
+    physical = ((c6502_u32)c6502_native_state.banks[source >> 12] << 12) |
+        (source & 0xfffu);
+    for (page = (source >> 12) + 1u; page <= (end - 1u) >> 12; ++page)
+        if (((c6502_u32)c6502_native_state.banks[page] << 12) !=
+            physical + (page << 12) - source) return 0;
+    /* A contiguous, LCD-disjoint RAM bank span needs no per-byte guest
+       lookup either. Never hand a caller a direct LCD-alias pointer. */
+    if (physical < C6502_RAM_SIZE) {
+        if (size > C6502_RAM_SIZE - physical ||
+            (physical < 0x1001u && physical + size > 0x400u)) return 0;
+        return c6502_native_state.ram + physical;
+    }
+    if (physical < C6502_GAME_PHYSICAL_BASE) return 0;
+    offset = physical - C6502_GAME_PHYSICAL_BASE;
+    if (offset > c6502_native_state.game_size ||
+        size > c6502_native_state.game_size - offset) return 0;
+    return c6502_native_state.game + offset;
 }
 
 static void native_picture(c6502_u8 x0, c6502_u8 y0,
@@ -1275,6 +1527,21 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
        copies tightly packed rows while preserving the edge pixels. */
     if (flag == 1u) {
         stride = (x1 >> 3) - (x0 >> 3) + 1u;
+        if (picture_source_disjoint(picture, stride * (y1 - y0 + 1u))) {
+            c6502_u8 row[20];
+            const c6502_u8 *direct = picture_direct_source(picture, stride * (y1 - y0 + 1u));
+            for (y = y0; y <= y1; ++y) {
+                const c6502_u8 *source = direct;
+                if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
+                else {
+                    for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
+                    c6502_perf.picture_staged_bytes += stride; source = row;
+                }
+                native_lcd_span(x0 >> 3, x1 >> 3, y, source, 0xffu, 0xffu);
+            }
+            return;
+        }
+        ++c6502_perf.picture_ordered_calls;
         for (y = y0; y <= y1; ++y)
             for (x = 0u; x < stride; ++x)
                 guest_write(lcd_address((x0 >> 3) + x, y),
@@ -1282,6 +1549,7 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
     } else if ((x0 >> 3) == (x1 >> 3)) {
         c6502_u8 mask = (c6502_u8)((0xffu << (8u - (x0 & 7u))) |
             (0x7fu >> (x1 & 7u)));
+        ++c6502_perf.picture_ordered_calls;
         for (y = y0; y <= y1; ++y) {
             c6502_u16 address = lcd_address(x0 >> 3, y);
             guest_write(address, (guest_read(address) & mask) |
@@ -1292,13 +1560,21 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
         /* Prove the complete source span cannot alias LCD RAM, then read
            each byte once. Keep the original read order for other spans. */
         c6502_u8 row[20];
+        const c6502_u8 *direct;
         stride = ((c6502_u32)x1 - x0 + 8u) >> 3;
+        direct = picture_direct_source(picture, stride * (y1 - y0 + 1u));
         for (y = y0; y <= y1; ++y) {
-            for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
+            const c6502_u8 *source = direct;
+            if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
+            else {
+                for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
+                c6502_perf.picture_staged_bytes += stride; source = row;
+            }
             blit_packed_row(0x400u, x0, (c6502_u8)y,
-                (c6502_u8)(x1 - x0 + 1u), row);
+                (c6502_u8)(x1 - x0 + 1u), source);
         }
     } else {
+        ++c6502_perf.picture_ordered_calls;
         stride = ((c6502_u32)x1 - x0 + 8u) >> 3;
         for (y = y0; y <= y1; ++y)
             for (x = x0; x <= x1; ++x)
@@ -1587,6 +1863,7 @@ static void api_graphics(c6502_u32 *r, c6502_u32 id)
     c6502_u8 x1 = stack8(r, 1u);
     c6502_u8 y1 = stack8(r, 2u);
     c6502_u16 pointer;
+    native_capture_keys();
     if (id == C6502_BRIDGE_c6502_adapter_sysascii) {
         c6502_u8 text[2];
         text[0] = stack8(r, 1u); text[1] = 0u;
@@ -1605,17 +1882,10 @@ static void api_graphics(c6502_u32 *r, c6502_u32 id)
     } else if (id == C6502_BRIDGE_c6502_adapter_syspicture) {
         pointer = stack16(r, 3u);
         native_picture(x0, y0, x1, y1, pointer, stack8(r, 5u));
-        /* SysPicture writes the real A-series LCD, not an off-screen page.
-           Fumo's $1828D uses this full-screen copy as a frame boundary,
-           without necessarily polling input/messages between animation
-           frames. Publish after the complete copy, never per pixel. */
-        if (!x0 && !y0 && x1 >= 158u && y1 >= 95u) {
+        /* LCD stores have already reached the host framebuffer. Keep the
+           full-picture counter for diagnostics, not as a flush trigger. */
+        if (!x0 && !y0 && x1 >= 158u && y1 >= 95u)
             ++c6502_perf.picture_frame_commits;
-            c6502_native_present();
-            c6502_last_frame_tick = native_clock();
-        } else {
-            native_refresh_if_due();
-        }
     } else if (id == C6502_BRIDGE_c6502_adapter_sysline) {
         line(x0, y0, x1, y1);
     } else if (id == C6502_BRIDGE_c6502_adapter_sysrect) {
@@ -1643,6 +1913,7 @@ static void api_graphics(c6502_u32 *r, c6502_u32 id)
     } else if (id == C6502_BRIDGE_c6502_adapter_sysrestorescreen) {
         save_restore_screen(r, 1);
     }
+    native_capture_keys();
 }
 
 static void native_strcmp(c6502_u32 *r, c6502_u16 left, c6502_u16 right)
@@ -2160,6 +2431,9 @@ static void convert_operand_to_float(
     set_nz(r, 0u);
 }
 
+#include "c6502_native_long_shift.h"
+#include "c6502_native_key_checkpoint.h"
+
 void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
 {
     c6502_u8 *ram = c6502_native_state.ram;
@@ -2171,6 +2445,7 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
     c6502_u32 address;
     c6502_u32 i;
 
+    native_key_checkpoint(id);
     if (id < C6502_BRIDGE_c6502_direct_read8 &&
             id != C6502_BRIDGE_c6502_adapter_sysgetkey &&
             id != C6502_BRIDGE_c6502_adapter_guitranslatemsg &&
@@ -2351,11 +2626,11 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         return_long(r, result); return;
 #ifdef C6502_NEEDS_c6502_runtime_sl_long
     case C6502_BRIDGE_c6502_runtime_sl_long:
-        return_long(r, long_operand(0x20u) << (ram[0x23u] & 31u)); return;
+        runtime_shift_long(r, 0); return;
 #endif
 #ifdef C6502_NEEDS_c6502_runtime_u_sr_long
     case C6502_BRIDGE_c6502_runtime_u_sr_long:
-        return_long(r, long_operand(0x20u) >> (ram[0x23u] & 31u)); return;
+        runtime_shift_long(r, 1); return;
 #endif
     case C6502_BRIDGE_c6502_runtime_cmp_long:
         left32 = long_operand(0x20u); right32 = long_operand(0x23u);
@@ -2485,7 +2760,9 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
 #endif
 
     case C6502_BRIDGE_c6502_adapter_guigetmsg:
-        api_get_message(r); return;
+        result = native_timing_input_begin();
+        api_get_message(r);
+        nt_leave(NT_GETMSG, result, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_guitranslatemsg:
         api_translate_message(r); return;
     case C6502_BRIDGE_c6502_adapter_guiinit:
@@ -2503,11 +2780,17 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
     case C6502_BRIDGE_c6502_adapter_guisetkbdtype:
         c6502_native_state.keyboard_type = (c6502_u8)r[4]; return;
     case C6502_BRIDGE_c6502_adapter_guimsgbox:
-        message_box(r, stack16(r, 0u), stack16(r, 2u)); return;
+        result = native_timing_input_begin();
+        message_box(r, stack16(r, 0u), stack16(r, 2u));
+        nt_leave(NT_DIALOG, result, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_guimsgbox_direct:
-        message_box(r, (c6502_u16)r[0], (c6502_u16)r[1]); return;
+        result = native_timing_input_begin();
+        message_box(r, (c6502_u16)r[0], (c6502_u16)r[1]);
+        nt_leave(NT_DIALOG, result, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_guiquerybox:
-        query_box(r); return;
+        result = native_timing_input_begin();
+        query_box(r);
+        nt_leave(NT_DIALOG, result, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_guidownapphelp:
     case C6502_BRIDGE_c6502_adapter_guidownapphelp_direct:
         /* The downloadable-app help hook is optional.  Returning false is
@@ -2540,7 +2823,9 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
 #endif
 #ifdef C6502_NEEDS_c6502_adapter_sysputpixel
     case C6502_BRIDGE_c6502_adapter_sysputpixel:
-        pixel((c6502_u8)r[4], stack8(r, 0u), stack8(r, 1u)); return;
+        result = nt_enter(native_clock());
+        pixel((c6502_u8)r[4], stack8(r, 0u), stack8(r, 1u));
+        nt_leave(NT_SHAPE, result, native_clock()); return;
 #endif
     case C6502_BRIDGE_c6502_adapter_sysascii:
     case C6502_BRIDGE_c6502_adapter_sysprintstring:
@@ -2554,14 +2839,19 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
     case C6502_BRIDGE_c6502_adapter_syspicturedummy:
     case C6502_BRIDGE_c6502_adapter_syssavescreen:
     case C6502_BRIDGE_c6502_adapter_sysrestorescreen:
-        result = native_clock();
+        result = nt_enter(native_clock());
         left32 = c6502_perf.present_ticks;
+        right32 = c6502_perf.picture_frame_commits;
         ++c6502_perf.graphics;
         api_graphics(r, id);
         /* Output is accounted separately, even when a drawing API commits
            a frame itself. Do not charge the same time to both categories. */
-        c6502_perf.graphics_ticks += native_clock() - result -
+        i = native_clock();
+        c6502_perf.graphics_ticks += i - result -
             (c6502_perf.present_ticks - left32);
+        nt_leave(native_graphics_phase(id), result, i);
+        if (right32 != c6502_perf.picture_frame_commits)
+            native_timing_frame(1u, i, i - result);
         return;
     case C6502_BRIDGE_c6502_adapter_strlen:
         address = stack16(r, 0u); result = 0u;
@@ -2587,9 +2877,14 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         return8(r, left16 == result ? 0u : (left16 < result ? 0xffu : 1u)); return;
     case C6502_BRIDGE_c6502_adapter_sysmemcpy_direct:
     case C6502_BRIDGE_c6502_adapter_fillmem_direct:
+        left32 = nt_enter(native_clock());
         address = r[0];
         if (id == C6502_BRIDGE_c6502_adapter_sysmemcpy_direct) {
-            i = r[1]; result = r[2]; while (result--) guest_write((c6502_u16)address++, guest_read((c6502_u16)i++));
+            i = r[1]; result = r[2];
+            while (result--) {
+                guest_write((c6502_u16)address++, guest_read((c6502_u16)i++));
+                if (!(address & 127u)) native_capture_keys();
+            }
         } else {
             /* A-series stdlib declares fillmem(char *dst, int count,
                char value).  The direct transaction keeps those source
@@ -2597,15 +2892,21 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
                count turned the common fillmem(0, 255, 0xff) startup clear
                into 65,535 mapped writes and corrupted banked game data. */
             i = r[1]; result = r[2];
-            while (i--)
+            while (i--) {
                 guest_write((c6502_u16)address++, (c6502_u8)result);
+                if (!(address & 127u)) native_capture_keys();
+            }
         }
-        return;
+        nt_leave(NT_MEMORY, left32, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_fillmem:
+        left32 = nt_enter(native_clock());
         address = stack16(r, 0u); i = stack16(r, 2u);
         result = stack8(r, 4u);
-        while (i--) guest_write((c6502_u16)address++, (c6502_u8)result);
-        return;
+        while (i--) {
+            guest_write((c6502_u16)address++, (c6502_u8)result);
+            if (!(address & 127u)) native_capture_keys();
+        }
+        nt_leave(NT_MEMORY, left32, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_sysmeminit_direct:
         native_heap_init((c6502_u16)r[0], (c6502_u16)r[1]); return;
     case C6502_BRIDGE_c6502_adapter_sysmemallocate:
@@ -2625,7 +2926,9 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
     case C6502_BRIDGE_c6502_adapter_syssrand_direct:
         c6502_native_state.random_state = r[0]; return;
     case C6502_BRIDGE_c6502_adapter_sysgetkey:
-        api_get_key(r); return;
+        result = native_timing_input_begin();
+        api_get_key(r);
+        nt_leave(NT_GETKEY, result, native_clock()); return;
     case C6502_BRIDGE_c6502_adapter_sysgetkeysound:
         return8(r, c6502_native_state.key_sound); return;
     case C6502_BRIDGE_c6502_adapter_syssetkeysound:
@@ -2661,6 +2964,35 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         return;
     }
 }
+
+#ifdef C6502_PROFILE_OTHER
+/* Called only by diagnostic bridges. The native caller PC is supplied by
+   assembly after saving R8, not extracted from a guessed host C frame.
+   Fast RAM assembly and the compiled game functions remain unchanged. */
+void c6502_native_bridge_profiled(c6502_u32 *r, c6502_u32 id, c6502_u32 caller)
+{
+    c6502_u32 started, before_other, stopped;
+    NativeProfile *p = &c6502_profile;
+    if (!p->active || !id || id >= C6502_BRIDGE_COUNT) {
+        c6502_native_bridge(r, id); return;
+    }
+    p->current_id = id; p->current_pc = caller;
+    if (!np_select(id, id < C6502_BRIDGE_c6502_direct_read8)) {
+        c6502_native_bridge(r, id); return;
+    }
+    started = native_clock(); ++p->clock_reads;
+    nt_charge(NT_OTHER, started);
+    before_other = c6502_timing.phase[NT_OTHER].ticks;
+    np_gap(started, before_other, id, caller);
+    c6502_native_bridge(r, id);
+    stopped = native_clock(); ++p->clock_reads;
+    /* Existing APIs have already charged their own phase. This adds only
+       their remaining OTHER time, or the entire unclassified helper call. */
+    nt_charge(NT_OTHER, stopped);
+    np_leave(id, caller, started, before_other, stopped,
+        c6502_timing.phase[NT_OTHER].ticks);
+}
+#endif
 
 int c6502_native_prepare(void)
 {
@@ -2710,13 +3042,19 @@ int c6502_native_prepare(void)
     c6502_native_state.random_state = 1u;
     load_file_index();
     c6502_key_initialized = 0u;
+    c6502_input_active = 0u;
+    c6502_key_head = c6502_key_count = 0u;
     c6502_key_repeat = 0xffu;
+    c6502_clock_initialized = 0u;
+    c6502_clock_previous = 0u;
+    bytes_set((c6502_u8 *)&c6502_clock_diagnostics, 0u, sizeof(c6502_clock_diagnostics));
     c6502_last_frame_tick = native_clock();
     c6502_timer_clock = c6502_last_frame_tick;
     c6502_timer_fraction = 0u;
     c6502_timer_remaining = 256u;
     c6502_timer_pending = 0u;
     c6502_frame_valid = 0u;
+    c6502_output_ready = 0u;
     bytes_set((c6502_u8 *)c6502_glyphs, 0u, sizeof(c6502_glyphs));
     c6502_native_state.running = 1u;
     c6502_missing_bridge_count = 0u;
@@ -2726,9 +3064,23 @@ int c6502_native_prepare(void)
 void c6502_native_perf_begin(void)
 {
     bytes_set((c6502_u8 *)&c6502_perf, 0u, sizeof(c6502_perf));
+    /* Reset statistics, not the accepted clock baseline. */
+    bytes_set((c6502_u8 *)&c6502_clock_diagnostics, 0u, sizeof(c6502_clock_diagnostics));
     c6502_perf.start = native_clock();
+    nt_begin(c6502_perf.start);
+#ifdef C6502_PROFILE_OTHER
+    np_begin(c6502_perf.start);
+#endif
     c6502_last_frame_tick = c6502_perf.start;
     c6502_timer_clock = c6502_perf.start;
+    c6502_input_active = 1u;
+    c6502_timer_key_deferred = 0u;
+    c6502_matrix_unstable_rows = 0u;
+    c6502_matrix_action_checks = c6502_matrix_action_rejected = 0u;
+    native_key_diagnostics_reset();
+    c6502_key_bridge_calls = 0u;
+    c6502_key_checkpoint_checks = c6502_key_checkpoint_scans = 0u;
+    native_capture_keys(); /* Establish launch-key baseline BEFORE game code. */
 }
 
 static void native_log_value(FS_FILE *file, const char *name, c6502_u32 value)
@@ -2743,14 +3095,170 @@ static void native_log_value(FS_FILE *file, const char *name, c6502_u32 value)
     (void)fs_fwrite(line, 1, length, file);
 }
 
+static void native_log_csv(FS_FILE *file, const char *tag,
+    const c6502_u32 *values, c6502_u32 count)
+{
+    char line[320], digits[10];
+    c6502_u32 length = 0u, i, n, v;
+    /* All callers have <= 24 fields; worst-case output is < 280 bytes. */
+    if (count > 24u) return;
+    while (tag[length] && length < 24u) { line[length] = tag[length]; ++length; }
+    for (i = 0u; i < count; ++i) {
+        line[length++] = ','; v = values[i]; n = 0u;
+        do { digits[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+        while (n) line[length++] = digits[--n];
+    }
+    line[length++] = '\n';
+    (void)fs_fwrite(line, 1, length, file);
+}
+
+static void native_log_timing(FS_FILE *file)
+{
+    static const char format[] =
+        "timing_unit=ctm_tick_1_over_256_second\n"
+        "phase_order=other,picture,text,shape,surface,memory,getmsg,getkey,dialog\n"
+        "phase_ticks_are_exclusive=1\n"
+        "other_includes_native_game_unprofiled_helpers_os_and_probe_overhead=1\n"
+        "getmsg_includes_wait_input_and_screen_repair=1\n"
+        "legacy_counters_overlap_phase_totals=1\n"
+        "frame_kind_1=full_SysPicture_completion_not_vsync\n"
+        "frame_kind_2=LCD_activity_at_input_checkpoint_not_game_frame\n"
+        "gap_bins_ticks=0,1-2,3-4,5-8,9-16,17-32,33-64,65-128,129-256,257+\n"
+        "phase_columns=id,calls,ticks,max_call_ticks,b0,b1,b2,b3,b4,b5,b6,b7,b8,b9\n"
+        "interval_columns=kind,events,intervals,min,max,sum,b0,b1,b2,b3,b4,b5,b6,b7,b8,b9\n"
+        "sample_columns=seq,kind,at,gap_valid,gap,draw_ticks,reload,number,"
+        "other,picture,text,shape,surface,memory,getmsg,getkey,dialog,"
+        "timer_generated,timer_delivered,timer_coalesced\n"
+        "window_columns=start,elapsed,other,picture,text,shape,surface,memory,"
+        "getmsg,getkey,dialog,full_pictures,display_batches\n";
+    c6502_u32 i, j, values[24], first, count, sum = 0u;
+    NativeTiming *t = &c6502_timing;
+    (void)fs_fwrite(format, 1, sizeof(format) - 1u, file);
+    native_log_value(file, "timing_storage_bytes", sizeof(*t));
+    native_log_value(file, "timing_invalid_deltas", t->invalid_deltas);
+    native_log_value(file, "timing_window_fast_forwards", t->window_fast_forwards);
+    native_log_value(file, "timing_samples_total", t->sample_count);
+    native_log_value(file, "timing_samples_first_capacity", NT_FIRST);
+    native_log_value(file, "timing_samples_recent_capacity", NT_RECENT);
+    count = t->sample_count < NT_FIRST ? t->sample_count : NT_FIRST;
+    native_log_value(file, "timing_samples_omitted", t->sample_count - count - t->recent_count);
+    for (i = 0u; i < NT_PHASES; ++i) {
+        NativeTimingMetric *m = &t->phase[i];
+        values[0] = i; values[1] = m->calls; values[2] = m->ticks; values[3] = m->max_ticks;
+        for (j = 0u; j < NT_BINS; ++j) values[4u + j] = m->bins[j];
+        native_log_csv(file, "phase", values, 4u + NT_BINS);
+        sum += m->ticks;
+    }
+    native_log_value(file, "phase_ticks_sum", sum);
+    native_log_value(file, "phase_elapsed_match", sum == c6502_perf.elapsed);
+    for (i = 0u; i < 2u; ++i) {
+        NativeTimingFrame *f = &t->frame[i];
+        values[0] = i + 1u; values[1] = f->events; values[2] = f->intervals;
+        values[3] = f->min_gap; values[4] = f->max_gap; values[5] = f->sum_gap;
+        for (j = 0u; j < NT_BINS; ++j) values[6u + j] = f->bins[j];
+        native_log_csv(file, "interval", values, 6u + NT_BINS);
+    }
+    for (i = 0u; i < count; ++i)
+        native_log_csv(file, "sample", (c6502_u32 *)&t->first[i],
+            sizeof(NativeTimingSample) / sizeof(c6502_u32));
+    first = (t->recent_head + NT_RECENT - t->recent_count) % NT_RECENT;
+    for (i = 0u; i < t->recent_count; ++i)
+        native_log_csv(file, "sample", (c6502_u32 *)&t->recent[(first + i) % NT_RECENT],
+            sizeof(NativeTimingSample) / sizeof(c6502_u32));
+    first = (t->window_head + NT_WINDOWS - t->window_count) % NT_WINDOWS;
+    for (i = 0u; i < t->window_count; ++i)
+        native_log_csv(file, "window", (c6502_u32 *)&t->windows[(first + i) % NT_WINDOWS],
+            sizeof(NativeTimingWindow) / sizeof(c6502_u32));
+    if (t->current.elapsed)
+        native_log_csv(file, "window", (c6502_u32 *)&t->current,
+            sizeof(NativeTimingWindow) / sizeof(c6502_u32));
+}
+
+#include "c6502_native_log.h"
+
+#ifdef C6502_PROFILE_OTHER
+static void native_log_profile(FS_FILE *file)
+{
+    static const char format[] =
+        "profile_other_version=1\n"
+        "profile_pc_kind=native_return_address_not_guest_pc_or_full_stack\n"
+        "profile_gaps_include_native_game_unsampled_helpers_os_probe_overhead=1\n"
+        "profile_bridge_ticks_include_probe_overhead_and_interrupts=1\n"
+        "profile_helper_sampling=first_then_pseudorandom_1_to_127_calls\n"
+        "profile_helper_target_stride=64\n"
+        "profile_helper_ticks_are_measured_samples_not_extrapolated=1\n"
+        "profile_other_is_subset_of_phase_other_do_not_add_again=1\n"
+        "profile_bridge_columns=id,calls,samples,wall_ticks,other_ticks,max_sample_ticks\n"
+        "profile_edge_columns=from_id,from_pc,to_id,to_pc,nonzero_intervals,other_ticks,max_other_ticks\n"
+        "profile_spike_columns=from_id,from_pc,to_id,to_pc,at,wall_ticks,other_ticks\n"
+        "profile_keygap_columns=from_id,from_pc,to_id,to_pc,at,wall_ticks,unused\n";
+    NativeProfile *p = &c6502_profile;
+    c6502_u32 i, n, v[6], sum = p->gap_other + p->bridge_other;
+    (void)fs_fwrite(format, 1, sizeof(format) - 1u, file);
+    native_log_value(file, "profile_storage_bytes", sizeof(*p));
+    native_log_value(file, "profile_clock_reads", p->clock_reads);
+    native_log_value(file, "profile_invalid_deltas", p->invalid);
+    native_log_value(file, "profile_gap_intervals", p->gaps);
+    native_log_value(file, "profile_gap_other_ticks", p->gap_other);
+    native_log_value(file, "profile_measured_bridge_other_ticks", p->bridge_other);
+    native_log_value(file, "profile_other_sum", sum);
+    native_log_value(file, "profile_other_match", sum == c6502_timing.phase[NT_OTHER].ticks);
+    native_log_value(file, "profile_edge_capacity", NP_EDGES);
+    native_log_value(file, "profile_edge_overflow_intervals", p->edge_overflow_calls);
+    native_log_value(file, "profile_edge_overflow_ticks", p->edge_overflow_ticks);
+    native_log_value(file, "profile_spike_events", p->spike_events);
+    native_log_value(file, "profile_keygap_events", p->key_events);
+    native_log_value(file, "profile_spike_capacity_each", NP_SPIKES);
+    for (i = 1u; i < C6502_BRIDGE_COUNT; ++i) {
+        NPBridge *b = &p->bridge[i];
+        if (!b->calls) continue;
+        v[0] = i; v[1] = b->calls; v[2] = b->samples;
+        v[3] = b->ticks; v[4] = b->other; v[5] = b->max_ticks;
+        native_log_csv(file, "profile_bridge", v, 6u);
+        native_log_csv(file, "profile_name_id", v, 1u);
+        n = 0u; while (c6502_profile_names[i][n]) ++n;
+        (void)fs_fwrite("profile_name=", 1, 13, file);
+        (void)fs_fwrite(c6502_profile_names[i], 1, n, file);
+        (void)fs_fwrite("\n", 1, 1, file);
+    }
+    for (i = 0u; i < NP_EDGES; ++i)
+        if (p->edges[i].calls)
+            native_log_csv(file, "profile_edge", (const c6502_u32 *)&p->edges[i], 7u);
+    for (i = 0u; i < NP_SPIKES; ++i) {
+        if (p->spikes[i].wall)
+            native_log_csv(file, "profile_spike", (const c6502_u32 *)&p->spikes[i], 7u);
+        if (p->keys[i].wall)
+            native_log_csv(file, "profile_keygap", (const c6502_u32 *)&p->keys[i], 7u);
+    }
+}
+#endif
+
 void c6502_native_perf_end(void)
 {
     FS_FILE *file;
-    static const char header[] = "[FUMO NATIVE PERF 2]\nbuild=QUERY-BOX-1\nclock_hz=256\n";
-    c6502_perf.elapsed = native_clock() - c6502_perf.start;
-    file = fs_fopen("a:\\NATIVE.LOG", "wb");
+    int log_ok;
+#ifdef C6502_PROFILE_OTHER
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=OTHER-PROFILE-1\nclock_hz=256\n";
+#else
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
+#endif
+    c6502_u32 stopped = native_clock();
+    nt_charge(NT_OTHER, stopped);
+#ifdef C6502_PROFILE_OTHER
+    np_gap(stopped, c6502_timing.phase[NT_OTHER].ticks, 0u, 0u);
+    c6502_profile.active = 0u;
+#endif
+    c6502_timing.active = 0u;
+    c6502_perf.elapsed = stopped - c6502_perf.start;
+    file = fs_fopen("a:\\NATIVE.TMP", "wb");
     if (!file) return;
     (void)fs_fwrite(header, 1, sizeof(header) - 1u, file);
+    native_log_value(file, "game_size", C6502_GAME_SIZE);
+#ifdef NATIVE_TITLE
+    (void)fs_fwrite("game=", 1, 5, file);
+    (void)fs_fwrite(NATIVE_TITLE, 1, sizeof(NATIVE_TITLE) - 1u, file);
+    (void)fs_fwrite("\n", 1, 1, file);
+#endif
 #define NATIVE_LOG(field) native_log_value(file, #field, c6502_perf.field)
     NATIVE_LOG(elapsed);
     NATIVE_LOG(polls); NATIVE_LOG(poll_ticks);
@@ -2758,16 +3266,92 @@ void c6502_native_perf_end(void)
     NATIVE_LOG(graphics); NATIVE_LOG(graphics_ticks);
     NATIVE_LOG(presents); NATIVE_LOG(present_ticks);
     NATIVE_LOG(submissions); NATIVE_LOG(dirty_rows);
+    NATIVE_LOG(mapped_lcd_bytes); NATIVE_LOG(framebuffer_bytes); NATIVE_LOG(repair_checks);
+    NATIVE_LOG(lcd_span_rows); NATIVE_LOG(lcd_span_bytes);
+    NATIVE_LOG(picture_direct_bytes); NATIVE_LOG(picture_staged_bytes); NATIVE_LOG(picture_ordered_calls);
+    NATIVE_LOG(key_scans); NATIVE_LOG(key_scan_max_gap_ticks);
+    NATIVE_LOG(key_edges); NATIVE_LOG(key_repeats); NATIVE_LOG(keys_consumed);
+    NATIVE_LOG(key_queue_peak); NATIVE_LOG(key_queue_overflows);
+    native_log_value(file, "key_action_bounces", c6502_action_bounces);
+    native_log_value(file, "key_checkpoint_interval_calls", C6502_KEY_CHECKPOINT_INTERVAL);
+    native_log_value(file, "key_bridge_calls", c6502_key_bridge_calls);
+    native_log_value(file, "key_checkpoint_checks", c6502_key_checkpoint_checks);
+    native_log_value(file, "key_checkpoint_scans", c6502_key_checkpoint_scans);
+    {
+        c6502_u32 i, row[4], first;
+        static const char format[] =
+            "key_code_columns=code,edges,repeats,consumed\n"
+            "key_gap_bins_ticks=0-4,5-8,9-16,17-32,33-64,65+\n"
+            "key_gap_columns=seq,end_tick,gap,previous_scan_last_bridge,current_last_bridge,row7\n"
+            "key_gap_bridge_ids_are_endpoint_context_not_time_attribution=1\n"
+            "key_event_columns=seq,tick,code,kind,queue_depth_after\n"
+            "key_event_kinds=0:edge,1:repeat,2:poll_consume,3:wait_consume\n";
+        (void)fs_fwrite(format, 1, sizeof(format) - 1u, file);
+        for (i = 0u; i < 64u; ++i) {
+            if (!c6502_key_code_counts[i][0] && !c6502_key_code_counts[i][1] &&
+                !c6502_key_code_counts[i][2]) continue;
+            row[0] = i; row[1] = c6502_key_code_counts[i][0];
+            row[2] = c6502_key_code_counts[i][1]; row[3] = c6502_key_code_counts[i][2];
+            native_log_csv(file, "key_code", row, 4u);
+        }
+        native_log_csv(file, "key_gap_bins", c6502_key_gap_bins, 6u);
+        first = c6502_key_gap_count > 8u ? c6502_key_gap_count - 8u : 0u;
+        native_log_value(file, "key_gap_trace_overwritten", first);
+        for (i = first; i < c6502_key_gap_count; ++i)
+            native_log_csv(file, "key_gap", c6502_key_gaps[i & 7u], 6u);
+        first = c6502_key_event_count > 32u ? c6502_key_event_count - 32u : 0u;
+        native_log_value(file, "key_event_trace_overwritten", first);
+        for (i = first; i < c6502_key_event_count; ++i)
+            native_log_csv(file, "key_event", c6502_key_events[i & 31u], 5u);
+    }
+    native_log_value(file, "key_matrix_unstable_rows", c6502_matrix_unstable_rows);
+    native_log_value(file, "key_matrix_action_checks", c6502_matrix_action_checks);
+    native_log_value(file, "key_matrix_action_rejected", c6502_matrix_action_rejected);
+    {
+        c6502_u32 n = c6502_matrix_action_checks > 8u ? 8u : c6502_matrix_action_checks;
+        c6502_u32 first = c6502_matrix_action_checks - n, i;
+        native_log_value(file, "key_matrix_trace_overwritten", first);
+        for (i = first; i < c6502_matrix_action_checks; ++i)
+            native_log_csv(file, "key_matrix_action", c6502_matrix_actions[i & 7u], 6u);
+    }
     NATIVE_LOG(glyph_hits); NATIVE_LOG(glyph_misses); NATIVE_LOG(timer_steps);
     NATIVE_LOG(timer_irqs); NATIVE_LOG(timer_opens); NATIVE_LOG(timer_closes);
+    NATIVE_LOG(timer_messages_delivered); NATIVE_LOG(key_messages_delivered);
+    NATIVE_LOG(timer_coalesced); NATIVE_LOG(timer_update_max_gap_ticks); NATIVE_LOG(timer_burst_max);
+    NATIVE_LOG(timer_key_deferrals); NATIVE_LOG(timer_key_yields);
+    NATIVE_LOG(timer_backward_rejected);
+    NATIVE_LOG(timer_advance_chunks); NATIVE_LOG(timer_advance_chunks_max);
+    {
+        NativeClockDiagnostics *d = &c6502_clock_diagnostics;
+        c6502_u32 i, first = d->backwards > 8u ? d->backwards - 8u : 0u;
+        static const char format[] = "clock_backstep_columns=seq,raw,previous,backward_ticks\n";
+        native_log_value(file, "clock_backward_samples", d->backwards);
+        native_log_value(file, "clock_max_backstep_ticks", d->max_backstep);
+        native_log_value(file, "clock_snapshot_retries", d->snapshot_retries);
+        native_log_value(file, "clock_retry_exhausted", d->exhausted);
+        native_log_value(file, "clock_forward_wraps", d->wraps);
+        native_log_value(file, "clock_backstep_trace_overwritten", first);
+        (void)fs_fwrite(format, 1, sizeof(format) - 1u, file);
+        for (i = first; i < d->backwards; ++i)
+            native_log_csv(file, "clock_backstep", d->trace[i & 7u], 4u);
+    }
     NATIVE_LOG(picture_frame_commits);
     NATIVE_LOG(msgbox_calls); NATIVE_LOG(msgbox_ticks); NATIVE_LOG(msgbox_wait_ticks);
     NATIVE_LOG(msgbox_last_timeout); NATIVE_LOG(msgbox_last_y); NATIVE_LOG(msgbox_last_height);
     native_log_value(file, "timer_reload", c6502_native_state.ram[0x227u]);
     native_log_value(file, "timer_period_number", native_timer_number());
+    native_log_value(file, "session_start_clock_tick", c6502_perf.start);
+    native_log_value(file, "session_end_clock_tick", stopped);
 #undef NATIVE_LOG
+    native_log_timing(file);
+#ifdef C6502_PROFILE_OTHER
+    native_log_profile(file);
+#endif
     (void)fs_fwrite("[END]\n", 1, 6, file);
-    (void)fs_update(file); (void)fs_fclose(file);
+    log_ok = !fs_ferror(file);
+    if (fs_update(file)) log_ok = 0;
+    if (fs_fclose(file)) log_ok = 0;
+    if (log_ok) (void)native_log_commit();
 }
 
 void c6502_native_release(void)

@@ -1,6 +1,7 @@
 #include "Dsys.h"
 #include "CRTL/malloc.h"
 #include "c6502_native_runtime.h"
+#include "c6502_native_exit.h"
 
 #ifndef NATIVE_TITLE
 #define NATIVE_TITLE "GAM NATIVE"
@@ -60,8 +61,8 @@ T_WORD App_Main(void)
     (void)fnGUI_SetActiveWindow(window);
     (void)fnGUI_SetFocus(window);
     c6502_native_state.window = window;
-    /* 9288 speed is a ~25 ms tick count, not milliseconds. */
-    (void)fnGUI_SetTimer(window, 1, 1);
+    /* No host GUI timer/message loop during native gameplay. Guest timing
+       is driven by CTM; keys are scanned directly into the game's FIFO. */
     /* Only used to rasterise glyphs into our explicit VirtualScr. The
        captioned client DC adds its screen origin to glyph coordinates. */
     c6502_native_state.hdc = fnGUI_GetDC(HWND_DESKTOP);
@@ -69,6 +70,12 @@ T_WORD App_Main(void)
     c6502_native_perf_begin();
     c6502_native_enter(c6502_entry_regs);
     c6502_native_perf_end();
+    /* Rejoin the host message framework only after guest execution ends.
+       Timer #1 drives the release/host-input handoff, not the game. */
+    (void)fnGUI_SetTimer(window, 1, 1);
+    /* The game may return while Confirm is still physically held. Keep
+       our focus until release; otherwise the desktop can see that hold. */
+    c6502_native_finish_input();
     (void)fnGUI_KillTimer(window, 1);
     if (c6502_native_state.hdc) {
         fnGUI_ReleaseDC(c6502_native_state.hdc);
@@ -81,8 +88,7 @@ T_WORD App_Main(void)
     fnGUI_ThrowAwayMessages(window);
     fnGUI_PostMessage(window, MSG_CLOSE, 0, 0);
     while (fnGUI_GetMessage(&message, window)) {
-        fnGUI_TranslateMessage(&message);
-        fnGUI_DispatchMessage(&message);
+        native_dispatch_teardown(&message);
     }
     fnGUI_ThrowAwayMessages(window);
     fnGUI_MainWindowCleanup(window);
@@ -102,12 +108,10 @@ T_WORD App_Main(void)
         for (round = 0u; round < 2u; ++round) {
             c6502_u32 pending = 32u, polls = 262144u;
             if (!fnGUI_GetMessage(&message, launcher)) break;
-            fnGUI_TranslateMessage(&message);
-            fnGUI_DispatchMessage(&message);
+            native_dispatch_teardown(&message);
             while (pending-- && fnGUI_HavePendingMessage(launcher)) {
                 if (!fnGUI_GetMessage(&message, launcher)) break;
-                fnGUI_TranslateMessage(&message);
-                fnGUI_DispatchMessage(&message);
+                native_dispatch_teardown(&message);
             }
             while (polls--) {
                 c6502_u32 channel, busy = 0u;
