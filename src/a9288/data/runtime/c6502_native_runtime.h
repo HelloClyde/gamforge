@@ -38,5 +38,6 @@ void c6502_native_invalidate_screen(void);
 void c6502_native_perf_begin(void);
 void c6502_native_perf_end(void);
 void c6502_native_finish_input(void);
+const char *c6502_native_resource_error(void);
 
 #endif

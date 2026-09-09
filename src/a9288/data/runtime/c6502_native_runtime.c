@@ -131,6 +131,9 @@ static void bytes_copy(c6502_u8 *out, const c6502_u8 *in, c6502_u32 size)
         *out++ = *in++;
 }
 
+#ifdef C6502_EXTERNAL_RESOURCES
+#include "c6502_native_resources.h"
+#endif
 #include "c6502_native_timing.h"
 #ifdef C6502_PROFILE_OTHER
 #include "c6502_native_profile.h"
@@ -366,7 +369,11 @@ static c6502_u8 physical_read(c6502_u32 address)
         return c6502_native_state.ram[address];
     if (address >= C6502_GAME_PHYSICAL_BASE &&
         address - C6502_GAME_PHYSICAL_BASE < c6502_native_state.game_size)
+#ifdef C6502_EXTERNAL_RESOURCES
+        return nr_read(address - C6502_GAME_PHYSICAL_BASE);
+#else
         return c6502_native_state.game[address - C6502_GAME_PHYSICAL_BASE];
+#endif
     return 0u;
 }
 
@@ -379,7 +386,11 @@ static void physical_write(c6502_u32 address, c6502_u8 value)
     } else if (address >= C6502_GAME_PHYSICAL_BASE &&
                address - C6502_GAME_PHYSICAL_BASE <
                    c6502_native_state.game_size) {
+#ifdef C6502_EXTERNAL_RESOURCES
+        nr_write(address - C6502_GAME_PHYSICAL_BASE, value);
+#else
         c6502_native_state.game[address - C6502_GAME_PHYSICAL_BASE] = value;
+#endif
     }
 }
 
@@ -958,6 +969,8 @@ void c6502_native_finish_input(void)
     c6502_u32 released_at = 0u;
     c6502_u32 quiet_timers = 0u;
     c6502_u8 releasing = 0u;
+    /* May also run after acknowledging a host resource-error dialog. */
+    c6502_input_active = 1u;
     /* Physical release alone is not a firmware-input barrier. Keep focus
        while the host drains its keyboard state, for at least 125 ms and
        two of our own GUI timer messages. Any key traffic restarts it.
@@ -1511,7 +1524,11 @@ static const c6502_u8 *picture_direct_source(c6502_u16 source, c6502_u32 size)
     offset = physical - C6502_GAME_PHYSICAL_BASE;
     if (offset > c6502_native_state.game_size ||
         size > c6502_native_state.game_size - offset) return 0;
+#ifdef C6502_EXTERNAL_RESOURCES
+    return nr_span(offset, size);
+#else
     return c6502_native_state.game + offset;
+#endif
 }
 
 static void native_picture(c6502_u8 x0, c6502_u8 y0,
@@ -3003,12 +3020,18 @@ int c6502_native_prepare(void)
     bytes_set((c6502_u8 *)&c6502_native_state, 0u, sizeof(c6502_native_state));
     c6502_native_state.ram = c6502_ram;
     c6502_native_state.game_size = C6502_GAME_SIZE;
+#ifdef C6502_EXTERNAL_RESOURCES
+    if (!nr_open()) { nr_close(); return 0; }
+#else
     c6502_native_state.game = (c6502_u8 *)malloc(C6502_GAME_SIZE);
     if (!c6502_native_state.game)
         return 0;
     if (!lzss_expand(c6502_game_image_lzss_start, c6502_game_image_lzss_end,
-            c6502_native_state.game, C6502_GAME_SIZE) ||
-        !lzss_expand(c6502_boot_snapshot_lzss_start,
+            c6502_native_state.game, C6502_GAME_SIZE)) {
+        c6502_native_release(); return 0;
+    }
+#endif
+    if (!lzss_expand(c6502_boot_snapshot_lzss_start,
             c6502_boot_snapshot_lzss_end, c6502_boot_raw,
             C6502_BOOT_RAW_SIZE)) {
         c6502_native_release();
@@ -3254,6 +3277,15 @@ void c6502_native_perf_end(void)
     if (!file) return;
     (void)fs_fwrite(header, 1, sizeof(header) - 1u, file);
     native_log_value(file, "game_size", C6502_GAME_SIZE);
+#ifdef C6502_EXTERNAL_RESOURCES
+    native_log_value(file, "external_resources", 1u);
+    native_log_value(file, "resource_cache_bytes", NR_SLOTS*NR_PAGE);
+    native_log_value(file, "resource_cache_hits", nr_hits);
+    native_log_value(file, "resource_cache_misses", nr_misses);
+    native_log_value(file, "resource_dirty_pages", nr_dirty_count);
+    native_log_value(file, "resource_writes", nr_writes);
+    native_log_value(file, "resource_error", nr_error);
+#endif
 #ifdef NATIVE_TITLE
     (void)fs_fwrite("game=", 1, 5, file);
     (void)fs_fwrite(NATIVE_TITLE, 1, sizeof(NATIVE_TITLE) - 1u, file);
@@ -3357,6 +3389,9 @@ void c6502_native_perf_end(void)
 void c6502_native_release(void)
 {
     c6502_u32 index;
+#ifdef C6502_EXTERNAL_RESOURCES
+    nr_close();
+#endif
     for (index = 0u; index < C6502_OPEN_FILES; ++index) {
         if (c6502_open_files[index].stream) {
             (void)fs_update(c6502_open_files[index].stream);
@@ -3368,4 +3403,20 @@ void c6502_native_release(void)
     if (c6502_native_state.game)
         free(c6502_native_state.game);
     c6502_native_state.game = 0;
+}
+
+const char *c6502_native_resource_error(void)
+{
+#ifdef C6502_EXTERNAL_RESOURCES
+    switch (nr_error) {
+    /* Short GBK messages fit the firmware's fixed-width MessageBox. */
+    case 1: return "\xc8\xb1\xc9\xd9\xd7\xca\xd4\xb4\xce\xc4\xbc\xfe";
+    case 2: return "\xd7\xca\xd4\xb4\xce\xc4\xbc\xfe\xb2\xbb\xc6\xa5\xc5\xe4";
+    case 3: return "\xd7\xca\xd4\xb4\xc4\xda\xb4\xe6\xb2\xbb\xd7\xe3";
+    case 4: return "\xd7\xca\xd4\xb4\xb6\xc1\xc8\xa1\xca\xa7\xb0\xdc";
+    case 5: return "\xd7\xca\xd4\xb4\xd0\xa3\xd1\xe9\xca\xa7\xb0\xdc";
+    case 6: return "\xd7\xca\xd4\xb4\xd0\xb4\xc8\xeb\xc4\xda\xb4\xe6\xb3\xac\xcf\xde";
+    }
+#endif
+    return 0;
 }

@@ -11,6 +11,8 @@ __pycache__/
 .coverage
 *.gam
 *.GAM
+*.res
+*.RES
 *.sav
 *.SAV
 *.exe

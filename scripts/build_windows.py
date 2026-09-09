@@ -95,6 +95,7 @@ def main():
     for path in files:
         if path.suffix.lower() in (
             ".gam",
+            ".res",
             ".sav",
             ".rom",
             ".map",

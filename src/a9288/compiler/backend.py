@@ -1459,6 +1459,7 @@ def main() -> None:
     parser.add_argument("--rome", type=Path, default=boot_export.DEFAULT_ROME)
     parser.add_argument("--output", type=Path, default=WORK / "backend")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--external-resources", action="store_true")
     args = parser.parse_args()
 
     game = args.game.read_bytes()
@@ -1504,7 +1505,11 @@ def main() -> None:
         args.output,
         outlines,
     )
-    resource_image = compile_resource_image(args.clang, args.output, game)
+    resource_image = (
+        {"packed_bytes": 0, "object": None}
+        if args.external_resources
+        else compile_resource_image(args.clang, args.output, game)
+    )
     boot_snapshot = compile_boot_snapshot(
         args.clang,
         args.output,
@@ -1596,6 +1601,7 @@ def main() -> None:
         "semantic_outline_bytes": outline_module["native_bytes"],
         "semantic_outline_object": outline_module["object"],
         "compressed_game_image_bytes": resource_image["packed_bytes"],
+        "external_resources": args.external_resources,
         "compressed_game_image_object": resource_image["object"],
         "compressed_boot_snapshot_bytes": boot_snapshot["packed_bytes"],
         "compressed_boot_snapshot_object": boot_snapshot["object"],

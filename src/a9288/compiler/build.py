@@ -15,6 +15,7 @@ from a9288.compiler import kf2 as build_9288
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.compiler.fast_helpers import fast_helper
 from a9288.paths import DATA, WORK, child_environment, task_command
+from a9288.resources import HEADER, c_resource_config, pack_resources
 
 
 def runtime_supported_bridges() -> tuple[str, ...]:
@@ -108,7 +109,10 @@ def symbol_address(register: str, symbol: str) -> list[str]:
 
 
 def generate_bridges(
-    symbols: list[str], output: Path, profile_other: bool = False
+    symbols: list[str],
+    output: Path,
+    profile_other: bool = False,
+    external_resources: bool = False,
 ) -> tuple[Path, Path]:
     unsupported = sorted(set(symbols) - set(SUPPORTED_BRIDGES))
     if unsupported:
@@ -349,10 +353,28 @@ def generate_bridges(
     )
     lines += symbol_address("r1", "c6502_host_dp")
     lines.append("    ld.w [%r1], %r15")
+    if external_resources:
+        lines += symbol_address("r1", "c6502_resource_entry_sp")
+        lines += ["    ld.w %r2, %sp", "    ld.w [%r1], %r2"]
     for register in range(4, 15):
         lines.append(f"    ext {register * 4}")
         lines.append(f"    ld.w %r{register}, [%r0]")
     lines.append("    call c6502_game_fn_00046")
+    if external_resources:
+        # On resource failure unwind only the native game to the saved C
+        # entry. Never return fabricated bytes to continuing game code.
+        lines += [
+            "    .globl c6502_native_resource_abort",
+            "    .type c6502_native_resource_abort,@function",
+            "c6502_native_resource_abort:",
+        ]
+        lines += symbol_address("r0", "c6502_resource_entry_sp")
+        lines += [
+            "    ld.w %r1, [%r0]",
+            "    ld.w %sp, %r1",
+            "    ld.w %r1, 0",
+            "    ld.w [%r0], %r1",
+        ]
     lines += symbol_address("r0", "c6502_host_dp")
     lines.extend(
         [
@@ -381,6 +403,7 @@ def main() -> None:
         help="diagnostic native-boundary and sampled helper attribution",
     )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
+    parser.add_argument("--external-resources", action="store_true")
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
     args = parser.parse_args()
@@ -401,6 +424,13 @@ def main() -> None:
     build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include)
     config = runtime_build / "c6502_native_app_config.h"
     config.write_text(c_name_definition(app_name), encoding="ascii")
+    resource = None
+    if args.external_resources:
+        resource_name, resource = pack_resources(args.game.read_bytes())
+        config.write_text(
+            c_name_definition(app_name) + c_resource_config(resource_name, resource[: HEADER.size]),
+            encoding="ascii",
+        )
     icons = runtime_build / "icons"
     write_icons(icons, args.icon)
 
@@ -420,6 +450,7 @@ def main() -> None:
             str(args.rom8),
             "--rome",
             str(args.rome),
+            *(["--external-resources"] if args.external_resources else []),
         )
     )
     combined = runtime_build / "game-combined.o"
@@ -432,7 +463,9 @@ def main() -> None:
             "Unresolved FAR call in native game: recover its target "
             "before linking; no silent no-op/fallback is permitted."
         )
-    header, bridge_s = generate_bridges(external, runtime_build, args.profile_other)
+    header, bridge_s = generate_bridges(
+        external, runtime_build, args.profile_other, args.external_resources
+    )
     print("[GAM9288_STAGE] runtime|编译公共运行库与程序元数据", flush=True)
 
     flags = [
@@ -506,6 +539,8 @@ def main() -> None:
     app = build_9288.pack_kf2(payload, app_name=name_bytes, icon_root=icons)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(app)
+    if resource is not None:
+        (args.output.parent / resource_name).write_bytes(resource)
     digest = hashlib.sha256(app).hexdigest()
     if args.profile_other:
         symbols = []

@@ -16,6 +16,7 @@ from pathlib import Path
 from a9288.app_options import compiler_lock, default_app_name, encode_app_name, inspect_game
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.paths import DEPENDENCIES, WORK, child_environment, task_command
+from a9288.resources import pack_resources
 
 DEFAULT_SDK = Path(os.environ.get("A9288_SDK", DEPENDENCIES / "sdk9288"))
 DEFAULT_TOOLCHAIN = Path(os.environ.get("A9288_TOOLCHAIN", DEPENDENCIES / "toolchain"))
@@ -73,6 +74,9 @@ def convert(args) -> None:
         command += ["--icon", str(args.icon.resolve())]
     if getattr(args, "profile_other", False):
         command.append("--profile-other")
+    external = bool(getattr(args, "external_resources", False))
+    if external:
+        command.append("--external-resources")
     print("+", " ".join(command), flush=True)
     subprocess.run(command, env=child_environment(), check=True)
     size = staged.stat().st_size
@@ -91,7 +95,8 @@ def convert(args) -> None:
             "app_category": "entertainment",
             "icon_source": str(args.icon.resolve()) if args.icon else "bundled-default",
             "standalone_link_complete": True,
-            "standalone_game_resources": True,
+            "standalone_game_resources": not external,
+            "external_resources": external,
             "requires_original_gam": False,
             "runtime_opcode_dispatcher": False,
             "runtime_guest_cycle_scheduler": False,
@@ -104,6 +109,25 @@ def convert(args) -> None:
             "sdk": str(sdk),
         }
     )
+    if external:
+        resource_name, expected = pack_resources(game.read_bytes())
+        resource = staged.parent / resource_name
+        if resource.read_bytes() != expected:
+            raise ValueError("外置资源校验失败，未发布 EXE。")
+        destination = output.parent / resource_name
+        if destination.exists() and destination.read_bytes() != expected:
+            raise ValueError(f"已有不同内容的资源文件 {resource_name}，请换输出目录，避免覆盖。")
+        report.update(
+            resource_file=resource_name,
+            resource_bytes=len(expected),
+            resource_sha256=hashlib.sha256(expected).hexdigest(),
+            resource_install_directory="A:\\系统\\数据\\",
+            resource_cache_bytes=128 * 1024,
+            resource_dirty_limit_bytes=256 * 1024,
+        )
+        # Immutable content-named resource first, executable last: a failed
+        # publication never makes the old EXE refer to a replaced resource.
+        publish_file(resource, destination)
     staged_report = staged.with_suffix(".report.json")
     staged_report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -133,6 +157,11 @@ def main() -> None:
         help="添加原生调用区间及运行库抽样耗时日志（诊断版）",
     )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
+    parser.add_argument(
+        "--external-resources",
+        action="store_true",
+        help="输出 EXE＋RES；EXE 放 A:\\系统\\程序，RES 放 A:\\系统\\数据，资源按需缓存",
+    )
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
     args = parser.parse_args()

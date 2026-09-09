@@ -46,6 +46,7 @@ class Conversion:
     toolchain: Path
     rom8: Path = DEFAULT_ROM8
     rome: Path = DEFAULT_ROME
+    external_resources: bool = False
 
     def validate(self):
         inspect_game(self.game)
@@ -90,6 +91,8 @@ class Conversion:
         )
         if self.icon:
             command += ["--icon", str(self.icon)]
+        if self.external_resources:
+            command.append("--external-resources")
         return command
 
 
@@ -202,6 +205,9 @@ class ConverterApp:
         self.toolchain = tk.StringVar(value=settings.get("toolchain", str(DEFAULT_TOOLCHAIN)))
         self.rom8 = tk.StringVar(value=settings.get("rom8", str(DEFAULT_ROM8)))
         self.rome = tk.StringVar(value=settings.get("rome", str(DEFAULT_ROME)))
+        self.external_resources = tk.BooleanVar(
+            value=bool(settings.get("external_resources", False))
+        )
         self.inputs = []
         self._style()
         self._layout()
@@ -311,6 +317,14 @@ class ConverterApp:
         self.label(
             left, "桌面名称取 EXE 文件名；分类为「娱乐」。附带报告、ELF、MAP。", 9, color=MUTED
         ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        mode = ttk.Checkbutton(
+            left, text="EXE＋外置资源文件（大游戏，按需缓存）", variable=self.external_resources
+        )
+        mode.grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.inputs.append(mode)
+        self.label(left, "EXE 放 A:\\系统\\程序；RES 放 A:\\系统\\数据。", 9, color=MUTED).grid(
+            row=10, column=0, columnspan=2, sticky="w"
+        )
 
         right = self.card(content)
         right.grid(row=0, column=1, sticky="nsew")
@@ -575,6 +589,7 @@ class ConverterApp:
                 Path(self.toolchain.get()).resolve(),
                 Path(self.rom8.get()).resolve(),
                 Path(self.rome.get()).resolve(),
+                external_resources=self.external_resources.get(),
             )
             config.validate()
         except Exception as exc:
@@ -595,6 +610,7 @@ class ConverterApp:
                         toolchain=self.toolchain.get(),
                         rom8=self.rom8.get(),
                         rome=self.rome.get(),
+                        external_resources=self.external_resources.get(),
                     ),
                     ensure_ascii=False,
                 ),
@@ -658,7 +674,12 @@ class ConverterApp:
                 self.last_output = Path(data["output_kf2"])
                 self.status.configure(text="转换完成", fg="#15803d")
                 self.detail.configure(
-                    text=f"{self.last_output.name} · {data['output_kf2_bytes'] / 1024:.1f} KiB · 校验通过\n{self.last_output}"
+                    text=f"{self.last_output.name} · {data['output_kf2_bytes'] / 1024:.1f} KiB · 校验通过\n"
+                    + (
+                        f"请安装 {data['resource_file']} 到 A:\\系统\\数据"
+                        if data.get("external_resources")
+                        else str(self.last_output)
+                    )
                 )
                 self.progress.configure(mode="determinate", value=100)
                 self.folder_button.configure(state="normal")

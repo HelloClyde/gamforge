@@ -181,6 +181,39 @@ class NativeConverterTest(unittest.TestCase):
         self.assertEqual(dest.read_bytes(), b"old")
         self.assertFalse(list(self.folder.glob("*.tmp")))
 
+    def test_external_publication_and_collision_protection(self):
+        from a9288.resources import pack_resources
+
+        args = self.args()
+        args.external_resources = True
+        stage = args.work_dir / "native-result/program.exe"
+        stage.parent.mkdir(parents=True)
+        for suffix in (".exe", ".elf", ".map"):
+            stage.with_suffix(suffix).write_bytes(b"new-artifact")
+        report = args.work_dir / "c6502-s1c33-direct/report.json"
+        report.parent.mkdir()
+        report.write_text("{}")
+        name, resource = pack_resources(args.game.read_bytes())
+        (stage.parent / name).write_bytes(resource)
+        target = args.output.parent / name
+        target.write_bytes(b"different-existing-resource")
+        args.output.write_bytes(b"old-exe")
+        with patch.object(driver.subprocess, "run"):
+            with self.assertRaises(ValueError):
+                driver.convert(args)
+        self.assertEqual(args.output.read_bytes(), b"old-exe")
+        self.assertEqual(target.read_bytes(), b"different-existing-resource")
+        target.write_bytes(resource)
+        with patch.object(driver.subprocess, "run") as run:
+            driver.convert(args)
+        self.assertIn("--external-resources", run.call_args.args[0])
+        self.assertEqual(args.output.read_bytes(), b"new-artifact")
+        result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
+        self.assertTrue(result["external_resources"])
+        self.assertFalse(result["standalone_game_resources"])
+        self.assertEqual(result["resource_file"], name)
+        self.assertEqual(result["resource_install_directory"], "A:\\系统\\数据\\")
+
     def test_gui_command_preserves_unicode_and_spaces(self):
         config = gui.Conversion(
             self.folder / "测试 游戏.gam",

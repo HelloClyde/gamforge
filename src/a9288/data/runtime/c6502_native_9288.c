@@ -10,8 +10,12 @@
 static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
     T_GUI_WPARAM wparam, T_GUI_LPARAM lparam)
 {
-    if (message == MSG_ERASEBKGND) return 0;
-    if (message == MSG_PAINT && c6502_native_state.window == window) {
+    /* After a resource failure, let the host acknowledge repaint requests
+       from its modal dialog. The direct-LCD game paint path intentionally
+       does not paint a host client DC and would keep those requests pending. */
+    if (message == MSG_ERASEBKGND && !c6502_native_resource_error()) return 0;
+    if (message == MSG_PAINT && c6502_native_state.window == window &&
+        !c6502_native_resource_error()) {
         c6502_native_invalidate_screen();
         return 0;
     }
@@ -33,8 +37,12 @@ T_WORD App_Main(void)
     T_GUI_MainWinCreate info;
     T_GUI_Msg message;
     volatile c6502_u8 *lcd = (volatile c6502_u8 *)0x003c0000u;
-    if (!c6502_native_prepare())
+    if (!c6502_native_prepare()) {
+        const char *error = c6502_native_resource_error();
+        if (error) fnGUI_MessageBox(HWND_DESKTOP, (const T_BYTE *)error,
+                                   (const T_BYTE *)error, MB_OK);
         return 0;
+    }
     desktop = (c6502_u8 *)malloc(19200u);
     if (!desktop) {
         c6502_native_release();
@@ -77,6 +85,20 @@ T_WORD App_Main(void)
        our focus until release; otherwise the desktop can see that hold. */
     c6502_native_finish_input();
     (void)fnGUI_KillTimer(window, 1);
+    /* Return the keyboard to the firmware BEFORE entering a modal dialog.
+       Also put the short error in its caption: some firmware revisions do
+       not render MessageBox body text reliably after direct LCD drawing. */
+    if (c6502_native_resource_error()) {
+        fnGUI_MessageBox(window, (const T_BYTE *)c6502_native_resource_error(),
+                         (const T_BYTE *)c6502_native_resource_error(), MB_OK);
+        /* Consume the dialog acknowledgement's release before returning
+           focus to the launcher, just as for the game's own exit key. */
+        (void)fnGUI_SetActiveWindow(window);
+        (void)fnGUI_SetFocus(window);
+        (void)fnGUI_SetTimer(window, 1, 1);
+        c6502_native_finish_input();
+        (void)fnGUI_KillTimer(window, 1);
+    }
     if (c6502_native_state.hdc) {
         fnGUI_ReleaseDC(c6502_native_state.hdc);
         c6502_native_state.hdc = 0;

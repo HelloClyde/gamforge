@@ -16,13 +16,14 @@
 - 一键原生转换，显示真实阶段、耗时与日志，支持取消。
 - 名称写入 KF2 和应用标题；默认输出文件名跟随名称。
 - 编译成功、链接完整及体积检查通过后才替换旧 EXE。
-- 包含原生游戏代码、压缩资源和共享运行库；真机运行不需要 GAM、BIN 或 GNA 文件。
+- 默认单 EXE 内置压缩资源；可选“EXE＋外置资源文件”，用于资源较大的游戏。
+- 两种模式均包含原生游戏代码和共享运行库，真机不需要原 GAM、BIN 或 GNA 文件。
 - 分发包自带 Python/Tk/Pillow 与 PC 启动状态生成工具，不依赖开发者的 Python 安装路径。
 
 ## 快速开始（Windows）
 
 1. 从 [Releases](https://github.com/HelloClyde/a-series-9288-translator/releases) 下载 Windows ZIP，
-   **完整解压**，运行 `A9288-Converter.exe`。当前正式版本为 [v1.0.0](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.0.0)。
+   **完整解压**，运行 `A9288-Converter.exe`。当前正式版本为 [v1.1.0](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.1.0)。
 2. 在“编译环境”中配置：9288 SDK、修正过 9288 ABI 的 S1C33 LLVM 工具链、A 系列 `8.BIN` 和 `E.BIN`。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
 4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动。
@@ -32,7 +33,25 @@ SDK 和固件不随仓库/ZIP 分发。仅支持 **9288 SDK**，不能用 9588 S
 
 名称最多 15 个 GBK 字节（通常 7 个汉字），不支持 emoji。9288 桌面标签采用 EXE
 文件名；另行修改输出文件名也会改变桌面标签。每次生成同名 `.elf`、`.map` 和
-`.report.json`，真机只需 EXE。工作目录默认 `%LOCALAPPDATA%\A9288\work`。
+`.report.json`。单文件模式真机只需 EXE；外置模式还需配套 RES。
+工作目录默认 `%LOCALAPPDATA%\A9288\work`。
+
+### EXE＋外置资源文件（v1.1.0 新增）
+
+在转换界面勾选 **EXE＋外置资源文件**，或在下方命令末尾添加
+`--external-resources`。成功后输出 EXE 和内容标识命名的 `Rxxxxxxx.RES`。
+将 EXE 复制到真机 **`A:\系统\程序\`**，RES 复制到 **`A:\系统\数据\`**。
+不要重命名 RES，也不要混用其他转换的资源。
+
+外置模式仍是 PC 离线编译的原生程序，不会在真机解释 GAM 指令。
+资源采用 4 KiB 分页、128 KiB 固定缓存，不再启动时分配完整 GAM。
+游戏对资源地址的写入保存在独立的会话内存（上限 256 KiB），不改写 RES；
+缺失、版本不匹配、损坏、读取失败或内存不足会报错退出。
+正常游戏存档仍由原有存档接口处理。
+
+此选项解决资源导致的 EXE 体积和整份资源内存问题；原生代码本身仍受
+1 MiB KF2 限制，不能保证任意游戏兼容。缓存未命中需要读盘，实际速度需真机验证。
+RES 包含游戏数据，和游戏 EXE 一样不应提交到本项目仓库或翻译器分发包。
 
 ## 开发与命令行
 

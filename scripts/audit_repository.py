@@ -7,7 +7,19 @@ from pathlib import Path
 def main():
     names = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0")
     allowed = {"src/a9288/data/icons/ico1.bin", "src/a9288/data/icons/ico2.bin"}
-    forbidden = {".gam", ".sav", ".rom", ".exe", ".elf", ".o", ".raw", ".flat", ".map", ".log"}
+    forbidden = {
+        ".gam",
+        ".res",
+        ".sav",
+        ".rom",
+        ".exe",
+        ".elf",
+        ".o",
+        ".raw",
+        ".flat",
+        ".map",
+        ".log",
+    }
     bad = [
         n
         for n in names
