@@ -2,7 +2,11 @@
 
 **经典游戏，原生新生。**
 
-GAMForge · A 系列原生编译器
+GAMForge · GAM 原生重编译器
+
+将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 原生程序。
+
+Recompile BBK A-series GAM games into native BBK 9288 applications.
 
 [![CI](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml/badge.svg)](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)

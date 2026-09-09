@@ -33,7 +33,7 @@ CI 自检使用程序生成的微型指令样本，不下载或编译商业游�
 3. 在准备发布的提交上创建并推送 tag：
 
 ```shell
-git tag -a v1.0.0 -m "GAMForge · A 系列原生编译器 1.0.0"
+git tag -a v1.0.0 -m "GAMForge · GAM 原生重编译器 1.0.0"
 git push origin v1.0.0
 ```
 

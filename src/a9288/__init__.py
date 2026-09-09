@@ -1,3 +1,3 @@
-"""GAMForge: A-series GAM to BBK 9288 native compiler."""
+"""GAMForge: recompile BBK A-series GAM games into native BBK 9288 applications."""
 
 __version__ = "1.1.2"

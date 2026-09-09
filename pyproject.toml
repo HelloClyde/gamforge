@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gamforge"
 version = "1.1.2"
-description = "Offline native C6502 GAM to BBK 9288 S1C33/KF2 compiler with a desktop GUI"
+description = "Recompile BBK A-series GAM games into native BBK 9288 applications."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
