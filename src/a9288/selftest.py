@@ -5,8 +5,9 @@ import struct
 
 from a9288 import __version__
 from a9288.app_options import encode_app_name, icon_images
+from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler import backend, cfg, frontend, kf2
-from a9288.compiler.boot import bundled_helper
+from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
 
 
 def main():
@@ -28,6 +29,12 @@ def main():
                 "version": __version__,
                 "synthetic_blocks": len(records),
                 "boot_helper": bundled_helper().is_file(),
+                "dependencies": {
+                    "sdk": str(DEFAULT_SDK),
+                    "toolchain": str(DEFAULT_TOOLCHAIN),
+                    "rom8": str(DEFAULT_ROM8),
+                    "rome": str(DEFAULT_ROME),
+                },
             },
             ensure_ascii=False,
         )

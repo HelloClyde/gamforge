@@ -8,7 +8,26 @@ DATA = Path(__file__).resolve().parent / "data"
 ROOT = Path(__file__).resolve().parents[2]
 USER_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local/share")) / "A9288"
 WORK = Path(os.environ.get("A9288_WORKSPACE", USER_DATA / "work")).resolve()
-DEPENDENCIES = Path(os.environ.get("A9288_DEPENDENCIES", USER_DATA / "dependencies"))
+
+
+def dependency_root() -> Path:
+    """Explicit override, relocated portable bundle, then user installation."""
+    override = os.environ.get("A9288_DEPENDENCIES")
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        portable = Path(sys.executable).resolve().parent / "dependencies"
+        if portable.is_dir():
+            return portable
+    return USER_DATA / "dependencies"
+
+
+DEPENDENCIES = dependency_root()
+
+
+def dependency_setting(saved: str | None, default: Path) -> str:
+    """A stale saved path must not break a newly relocated full bundle."""
+    return str(saved) if saved and Path(saved).exists() else str(default)
 
 
 def task_command(module: str, *arguments) -> list[str]:

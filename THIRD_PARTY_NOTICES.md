@@ -15,7 +15,7 @@
 工具链来自 <https://github.com/autch/llvm-s1c33>，固定提交见 `toolchain/manifest.json`。
 LLVM 本身使用 Apache-2.0 WITH LLVM-exception；本项目提供 9288 GNU33 ABI 修正补丁。
 工具链单独构建和分发时保留上游 `llvm/LICENSE.TXT`、源码提交和补丁；并不将 LLVM
-改成 GPL 许可。应用 ZIP 不默认包含完整 LLVM 工具链。
+改成 GPL 许可。轻量 ZIP 不含工具链；全套 ZIP 包含所需工具、LLVM 许可、补丁和来源记录。
 
 ## Python、GUI 与打包
 
@@ -27,8 +27,16 @@ Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本�
 
 ## SDK、固件、游戏与资源
 
-- 9288 SDK、A 系列 `8.BIN` / `E.BIN`、商业 GAM 不包含在源码或 CI 分发包中。
-  用户需自行取得并有权使用；项目 GPL 不授予这些外部文件的再分发权。
+全套包中的工具链使用 Microsoft Visual C++ 运行库，以 app-local 方式保留原始 x64 CRT DLL。
+文件取自已安装 Visual Studio Build Tools 的 `VC/Redist/MSVC/.../x64/Microsoft.VC142.CRT`，
+不从 Windows 系统目录抓取，不包含 debug_nonredist。Microsoft 组件不属于本项目 GPL：
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
+https://learn.microsoft.com/en-us/visualstudio/releases/2019/redistribution
+
+- 9288 SDK 和 A 系列 `8.BIN` / `E.BIN` 不进入源码或普通 CI 轻量包。
+  维护者已确认获授权分发所提供的 SDK（督工 SDK）和配套固件；全套包仅包含所需 SDK 头文件与固件，
+  不包含商业 GAM、游戏 EXE、RES 或存档。该分发授权不等于将第三方组件改为 GPL。
+  全套包的 `FULL-BUNDLE.json` 记录实际依赖哈希和工具链版本。
 - `c6502_symbols.json` 仅记录 C6502 开发包 `test.map` 中函数名/地址事实，未包含
   完整开发包、编译器二进制或 SDK 实现。
 - `runtime/c6502_native_query_assets.h` 中的小型对话框位图常量源于兼容性逆向，
@@ -37,4 +45,4 @@ Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本�
   本项目不是步步高官方产品。
 - 原生转换后的 EXE 包含用户游戏资源；项目不会将其自动公开、纳入源码或上传 release。
 
-版权、商标或许可问题请在仓库联系维护者，并避免在公开 issue 粘贴完整游戏/固件。
+ 版权、商标或许可问题请在仓库联系维护者，并避免在公开 issue 粘贴完整游戏/固件。

@@ -23,12 +23,16 @@
 ## 快速开始（Windows）
 
 1. 从 [Releases](https://github.com/HelloClyde/a-series-9288-translator/releases) 下载 Windows ZIP，
-   **完整解压**，运行 `A9288-Converter.exe`。当前正式版本为 [v1.1.0](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.1.0)。
-2. 在“编译环境”中配置：9288 SDK、修正过 9288 ABI 的 S1C33 LLVM 工具链、A 系列 `8.BIN` 和 `E.BIN`。
+   优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `A9288-Converter.exe`。
+   当前版本为 [v1.1.1](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.1.1)。
+2. 全套版已配好所需 SDK、工具链和固件，无需安装 Python、编译器或手动填写路径。
+   不含 `full` 的轻量版仍需在“编译环境”中自行配置这些依赖。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
 4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动。
 
-SDK 和固件不随仓库/ZIP 分发。仅支持 **9288 SDK**，不能用 9588 SDK 替代。
+全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和轻量版不含它们。
+请保留包内 `dependencies`、`_internal` 目录，不要只复制单个 EXE。支持 Windows 10/11 x64。
+仅支持 **9288 SDK**，不能用 9588 SDK 替代。
 工具链不是普通 LLVM；构建方法见 [工具链说明](toolchain/README.md)。
 
 名称最多 15 个 GBK 字节（通常 7 个汉字），不支持 emoji。9288 桌面标签采用 EXE

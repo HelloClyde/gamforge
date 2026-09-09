@@ -1,5 +1,22 @@
 # 构建与发布
 
+## 全套离线版
+
+先构建同版本轻量 Windows 包，再由获 SDK/固件分发授权的维护者执行：
+
+```powershell
+python scripts/build_full_bundle.py --sdk "9288 SDK路径" --toolchain "工具链路径" `
+  --rom8 "固件目录/8.BIN" --rome "固件目录/E.BIN" `
+  --vc-runtime "Visual Studio/VC/Redist/MSVC/版本/x64/Microsoft.VC142.CRT" `
+  --authorized-redistribution
+```
+
+工具只打包所需 SDK 头文件、四个工具链程序与 app-local CRT、固件，不打包游戏。
+生成 `full-windows-x64.zip` 和校验文件。解压到新的目录，清除 A9288/Python 环境覆盖、
+使用独立 LOCALAPPDATA 和仅 System32 的 PATH，以包内 CLI 不带 SDK/工具链/固件参数实际
+转换用户有权使用的测试游戏。游戏产物只保留本地，验证后才将全套 ZIP 和校验上传对应 Release。
+普通 CI 无第三方依赖，继续构建轻量版；不得把 SDK/固件提交源码来绕过此流程。
+
 ## 普通构建
 
 `Build` 在 `main` push、pull request 和 `workflow_dispatch` 时运行。

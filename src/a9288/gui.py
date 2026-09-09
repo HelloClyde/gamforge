@@ -22,7 +22,7 @@ from PIL import Image, ImageTk
 from a9288.app_options import default_app_name, encode_app_name, icon_images, inspect_game
 from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
-from a9288.paths import USER_DATA, WORK, child_environment, task_command
+from a9288.paths import USER_DATA, WORK, child_environment, dependency_setting, task_command
 
 SETTINGS = USER_DATA / "settings.json"
 BG = "#f3f6fb"
@@ -201,10 +201,12 @@ class ConverterApp:
             settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
-        self.sdk = tk.StringVar(value=settings.get("sdk", str(DEFAULT_SDK)))
-        self.toolchain = tk.StringVar(value=settings.get("toolchain", str(DEFAULT_TOOLCHAIN)))
-        self.rom8 = tk.StringVar(value=settings.get("rom8", str(DEFAULT_ROM8)))
-        self.rome = tk.StringVar(value=settings.get("rome", str(DEFAULT_ROME)))
+        self.sdk = tk.StringVar(value=dependency_setting(settings.get("sdk"), DEFAULT_SDK))
+        self.toolchain = tk.StringVar(
+            value=dependency_setting(settings.get("toolchain"), DEFAULT_TOOLCHAIN)
+        )
+        self.rom8 = tk.StringVar(value=dependency_setting(settings.get("rom8"), DEFAULT_ROM8))
+        self.rome = tk.StringVar(value=dependency_setting(settings.get("rome"), DEFAULT_ROME))
         self.external_resources = tk.BooleanVar(
             value=bool(settings.get("external_resources", False))
         )
