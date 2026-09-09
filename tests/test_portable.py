@@ -20,7 +20,7 @@ class PortableTest(unittest.TestCase):
                 patch.object(sys, "executable", str(folder / "A9288-CLI.exe")),
                 patch.dict(os.environ, {}, clear=True),
             ):
-                self.assertEqual(paths.dependency_root(), folder / "dependencies")
+                self.assertEqual(paths.dependency_root(), (folder / "dependencies").resolve())
                 with patch.dict(os.environ, {"A9288_DEPENDENCIES": "explicit"}):
                     self.assertEqual(paths.dependency_root(), Path("explicit"))
             with (
