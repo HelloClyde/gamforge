@@ -5,6 +5,7 @@
 本项目从 HelloClyde/BBK9288-gam4980 的 PC 原生编译链拆分，保留原有 GPL v3
 许可文件。来源：<https://github.com/HelloClyde/BBK9288-gam4980>。
 参考核心的移植来源还包括 <https://github.com/HelloClyde/BBK9588-gam4980>。
+4980 模拟器来自 **无云、iyzsong**，感谢两位作者的基础工作。
 原生运行库、编译器、测试和本项目新增界面遵循仓库 LICENSE；保留已有作者声明。
 
 `src/a9288/data/boot_reference` 是 PC 工具的参考实现，不是生成 EXE 的运行时解释器。
@@ -27,6 +28,8 @@ Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本�
 
 ## SDK、固件、游戏与资源
 
+9288 SDK 来自 **钳工**，感谢其提供的开发基础。
+
 全套包中的工具链使用 Microsoft Visual C++ 运行库，以 app-local 方式保留原始 x64 CRT DLL。
 文件取自已安装 Visual Studio Build Tools 的 `VC/Redist/MSVC/.../x64/Microsoft.VC142.CRT`，
 不从 Windows 系统目录抓取，不包含 debug_nonredist。Microsoft 组件不属于本项目 GPL：
@@ -34,7 +37,7 @@ https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
 https://learn.microsoft.com/en-us/visualstudio/releases/2019/redistribution
 
 - 9288 SDK 和 A 系列 `8.BIN` / `E.BIN` 不进入源码或普通 CI 轻量包。
-  维护者已确认获授权分发所提供的 SDK（督工 SDK）和配套固件；全套包仅包含所需 SDK 头文件与固件，
+  维护者已确认获授权分发所提供的 SDK（钳工 SDK）和配套固件；全套包仅包含所需 SDK 头文件与固件，
   不包含商业 GAM、游戏 EXE、RES 或存档。该分发授权不等于将第三方组件改为 GPL。
   全套包的 `FULL-BUNDLE.json` 记录实际依赖哈希和工具链版本。
 - `c6502_symbols.json` 仅记录 C6502 开发包 `test.map` 中函数名/地址事实，未包含
