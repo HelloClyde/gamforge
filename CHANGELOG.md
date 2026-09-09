@@ -1,5 +1,12 @@
 # 更新记录
 
+## 1.1.2 — 2026-09-09
+
+- 项目统一命名为 GAMForge · A 系列原生编译器，仓库更名为 HelloClyde/gamforge。
+- Windows GUI / CLI 更名为 GAMForge.exe / GAMForge-CLI.exe，ZIP 与全套包目录同步更名。
+- 保留内部 a9288 模块、a9288 命令别名、A9288 环境变量和用户配置目录，已有设置无需迁移。
+- 新增 gamforge 命令入口；不改游戏编译逻辑、资源格式或安装目录。
+
 ## 1.1.1 — 2026-09-09
 
 - 新增全套离线分发包：所需 9288 SDK 编译头文件、A 系列固件、S1C33 LLVM 和 app-local VC 运行库随包提供，不含游戏。

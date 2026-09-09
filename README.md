@@ -1,6 +1,10 @@
-# A 系列 9288 翻译器
+# GAMForge
 
-[![CI](https://github.com/HelloClyde/a-series-9288-translator/actions/workflows/build.yml/badge.svg)](https://github.com/HelloClyde/a-series-9288-translator/actions/workflows/build.yml)
+**经典游戏，原生新生。**
+
+GAMForge · A 系列原生编译器
+
+[![CI](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml/badge.svg)](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 BBK 9288 的 S1C33 原生程序**，
@@ -22,9 +26,9 @@
 
 ## 快速开始（Windows）
 
-1. 从 [Releases](https://github.com/HelloClyde/a-series-9288-translator/releases) 下载 Windows ZIP，
-   优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `A9288-Converter.exe`。
-   当前版本为 [v1.1.1](https://github.com/HelloClyde/a-series-9288-translator/releases/tag/v1.1.1)。
+1. 从 [Releases](https://github.com/HelloClyde/gamforge/releases) 下载 Windows ZIP，
+   优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `GAMForge.exe`。
+   当前版本为 [v1.1.2](https://github.com/HelloClyde/gamforge/releases/tag/v1.1.2)。
 2. 全套版已配好所需 SDK、工具链和固件，无需安装 Python、编译器或手动填写路径。
    不含 `full` 的轻量版仍需在“编译环境”中自行配置这些依赖。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。

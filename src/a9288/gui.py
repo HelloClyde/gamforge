@@ -178,7 +178,7 @@ class ConversionWorker:
 class ConverterApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("GAM → 9288 · 原生程序转换器")
+        root.title("GAMForge · A 系列原生编译器")
         root.configure(bg=BG)
         root.geometry("1120x900")
         root.minsize(980, 860)
@@ -273,7 +273,7 @@ class ConverterApp:
         shell.pack(fill="both", expand=True)
         head = tk.Frame(shell, bg=BG)
         head.pack(fill="x", pady=(0, 18))
-        self.label(head, "GAM → 9288", 23, bold=True).pack(side="left")
+        self.label(head, "GAMForge", 23, bold=True).pack(side="left")
         self.label(head, "PC 编译  /  S1C33 原生代码  /  KF2 EXE", 10, color=MUTED).pack(
             side="right", pady=9
         )
@@ -359,7 +359,7 @@ class ConverterApp:
         )
         self.env_window = tk.Toplevel(self.root)
         self.env_window.withdraw()
-        self.env_window.title("编译环境 · GAM → 9288")
+        self.env_window.title("编译环境 · GAMForge")
         self.env_window.geometry("920x330")
         self.env_window.minsize(740, 310)
         self.env_window.transient(self.root)

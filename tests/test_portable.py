@@ -17,7 +17,7 @@ class PortableTest(unittest.TestCase):
             (folder / "dependencies").mkdir(parents=True)
             with (
                 patch.object(sys, "frozen", True, create=True),
-                patch.object(sys, "executable", str(folder / "A9288-CLI.exe")),
+                patch.object(sys, "executable", str(folder / "GAMForge-CLI.exe")),
                 patch.dict(os.environ, {}, clear=True),
             ):
                 self.assertEqual(paths.dependency_root(), (folder / "dependencies").resolve())

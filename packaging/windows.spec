@@ -7,8 +7,8 @@ a=Analysis([str(root/'packaging/entry.py')],pathex=[str(root/'src')],
     datas=collect_data_files('a9288'),hiddenimports=collect_submodules('a9288'),
     excludes=['pytest','ruff','py65','setuptools','pip'],noarchive=False)
 pyz=PYZ(a.pure)
-gui=EXE(pyz,a.scripts,[],exclude_binaries=True,name='A9288-Converter',
+gui=EXE(pyz,a.scripts,[],exclude_binaries=True,name='GAMForge',
         console=False,debug=False,strip=False,upx=False)
-cli=EXE(pyz,a.scripts,[],exclude_binaries=True,name='A9288-CLI',
+cli=EXE(pyz,a.scripts,[],exclude_binaries=True,name='GAMForge-CLI',
         console=True,debug=False,strip=False,upx=False)
-coll=COLLECT(gui,cli,a.binaries,a.datas,strip=False,upx=False,name='A9288-Translator')
+coll=COLLECT(gui,cli,a.binaries,a.datas,strip=False,upx=False,name='GAMForge')

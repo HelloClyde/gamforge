@@ -25,7 +25,7 @@ S1C33 汇编 → 9288 原生运行库链接 → 资源压缩、KF2 图标与名�
 
 应用资源通过包路径定位，工作产物写到用户工作目录，避免写入 Program Files 或源码。
 源码与冻结版都通过 `task_command` 进入受限的 worker 模块白名单。冻结版调用
-`A9288-CLI.exe`，不把 `sys.executable` 当成 Python 解释器执行脚本，也不会递归弹出 GUI。
+`GAMForge-CLI.exe`，不把 `sys.executable` 当成 Python 解释器执行脚本，也不会递归弹出 GUI。
 
 GUI 后台线程只收集消息，不直接操作 Tk 控件。主线程处理进度/按钮状态；取消只作用
 于本次拥有的进程树。编译错误或体积超限不替换旧 EXE；最终 EXE 最后原子替换。

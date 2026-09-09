@@ -33,7 +33,7 @@ def dependency_setting(saved: str | None, default: Path) -> str:
 def task_command(module: str, *arguments) -> list[str]:
     """Use the console companion in frozen builds, never pretend it is Python."""
     if getattr(sys, "frozen", False):
-        executable = Path(sys.executable).with_name("A9288-CLI.exe")
+        executable = Path(sys.executable).with_name("GAMForge-CLI.exe")
         return [str(executable), "--worker", module, *map(str, arguments)]
     executable = Path(sys.executable)
     if executable.name.lower() == "pythonw.exe":

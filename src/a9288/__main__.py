@@ -35,7 +35,7 @@ def main():
     from a9288 import __version__
 
     parser = argparse.ArgumentParser(
-        description="A 系列 9288 翻译器：PC 离线生成 S1C33 / KF2 原生程序"
+        description="GAMForge · A 系列原生编译器：PC 离线生成 S1C33 / KF2 原生程序"
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.epilog = "命令：gui | convert GAME --sdk PATH --toolchain PATH --rom8 PATH --rome PATH"

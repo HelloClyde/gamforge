@@ -46,7 +46,7 @@ def isolated_environment(work):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--portable-dir", type=Path, default=ROOT / "dist/A9288-Translator")
+    parser.add_argument("--portable-dir", type=Path, default=ROOT / "dist/GAMForge")
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--rom8", type=Path, required=True)
@@ -61,7 +61,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "dist" / f"a9288-translator-{__version__}-full-windows-x64.zip",
+        default=ROOT / "dist" / f"gamforge-{__version__}-full-windows-x64.zip",
     )
     args = parser.parse_args()
     if not args.authorized_redistribution:
@@ -77,7 +77,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="full-bundle-", dir=args.output.parent) as temporary:
         work = Path(temporary)
-        folder = work / "A9288-Translator"
+        folder = work / "GAMForge"
         shutil.copytree(args.portable_dir, folder)
         deps = folder / "dependencies"
         if deps.exists():
@@ -115,7 +115,10 @@ def main():
         env = isolated_environment(work)
         report = json.loads(
             subprocess.check_output(
-                [str(folder / "A9288-CLI.exe"), "--self-test"], env=env, cwd=work, encoding="utf-8"
+                [str(folder / "GAMForge-CLI.exe"), "--self-test"],
+                env=env,
+                cwd=work,
+                encoding="utf-8",
             )
         )
         assert report["self_test"] == "PASS" and report["version"] == __version__, report
@@ -144,7 +147,7 @@ def main():
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         (folder / "开始使用.txt").write_text(
-            "全套离线版：完整解压后运行 A9288-Converter.exe，选择自己的 GAM 即可转换。\n无需安装 Python、SDK、编译器或手工填写依赖路径。\n请保留 dependencies 和 _internal 目录，不能只复制单个 EXE。\nEXE 放 A:\\系统\\程序；外置模式 RES 放 A:\\系统\\数据。\n需要 Windows 10/11 x64；不含游戏，不保证任意 GAM 兼容。\n",
+            "全套离线版：完整解压后运行 GAMForge.exe，选择自己的 GAM 即可转换。\n无需安装 Python、SDK、编译器或手工填写依赖路径。\n请保留 dependencies 和 _internal 目录，不能只复制单个 EXE。\nEXE 放 A:\\系统\\程序；外置模式 RES 放 A:\\系统\\数据。\n需要 Windows 10/11 x64；不含游戏，不保证任意 GAM 兼容。\n",
             encoding="utf-8",
         )
         manifest = {

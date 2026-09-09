@@ -81,8 +81,8 @@ jobs:
         with:
           name: windows-x64
           path: |
-            dist/a9288-translator-*-windows-x64.zip
-            dist/a9288-translator-*-windows-x64.zip.sha256
+            dist/gamforge-*-windows-x64.zip
+            dist/gamforge-*-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -112,5 +112,5 @@ jobs:
           fi
           (cd dist && sha256sum --check *.sha256)
           gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 \
-            --verify-tag --draft --title "A 系列 9288 翻译器 $RELEASE_TAG" --generate-notes
+            --verify-tag --draft --title "GAMForge · A 系列原生编译器 $RELEASE_TAG" --generate-notes
           gh release edit "$RELEASE_TAG" --draft=false --latest

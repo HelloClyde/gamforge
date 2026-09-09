@@ -76,14 +76,14 @@ def main():
         cwd=ROOT,
         check=True,
     )
-    folder = ROOT / "dist/A9288-Translator"
+    folder = ROOT / "dist/GAMForge"
     for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md"):
         shutil.copyfile(ROOT / name, folder / name)
     shutil.copytree(ROOT / "docs", folder / "docs", dirs_exist_ok=True)
     shutil.copytree(ROOT / "toolchain", folder / "toolchain", dirs_exist_ok=True)
     collect_licenses(folder)
     # Self-test crosses a frozen worker boundary as well as inspecting data.
-    executable = folder / "A9288-CLI.exe"
+    executable = folder / "GAMForge-CLI.exe"
     result = subprocess.check_output([str(executable), "--self-test"], cwd=folder, encoding="utf-8")
     report = json.loads(result.strip())
     if report.get("self_test") != "PASS" or not report.get("boot_helper"):
@@ -110,7 +110,7 @@ def main():
     (folder / "MANIFEST.sha256.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    archive = ROOT / "dist" / f"a9288-translator-{__version__}-windows-x64.zip"
+    archive = ROOT / "dist" / f"gamforge-{__version__}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zipped:
         for path in sorted(folder.rglob("*")):
             if path.is_file():

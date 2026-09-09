@@ -33,7 +33,7 @@ CI 自检使用程序生成的微型指令样本，不下载或编译商业游�
 3. 在准备发布的提交上创建并推送 tag：
 
 ```shell
-git tag -a v1.0.0 -m "A 系列 9288 翻译器 1.0.0"
+git tag -a v1.0.0 -m "GAMForge · A 系列原生编译器 1.0.0"
 git push origin v1.0.0
 ```
 
@@ -51,7 +51,7 @@ tag 版本必须与两处元数据完全一致。tag build 再次测试并构建
 ## 分发检查
 
 - ZIP 内 GUI 和 CLI 必须能在没有本项目 Python 环境的情况下运行。
-- `A9288-CLI.exe --self-test` 必须返回 PASS，且 `boot_helper=true`。
+- `GAMForge-CLI.exe --self-test` 必须返回 PASS，且 `boot_helper=true`。
 - `--worker compiler.backend --help` 必须成功，验证冻结进程协议。
 - 不得携带 GAM、存档、SDK、固件、用户日志或游戏 EXE。
 - `licenses/` 保留构建环境的 CPython、Pillow、PyInstaller、Tcl/Tk 许可与版本记录。
