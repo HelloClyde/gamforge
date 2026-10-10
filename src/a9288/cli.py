@@ -45,7 +45,10 @@ def convert(args) -> None:
     scale = display_scale(target, getattr(args, "display_scale", None))
     view_width, view_height, view_x, view_y = display_geometry(target, scale)
     if target == "9288t":
-        print("提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。", flush=True)
+        print(
+            "提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。",
+            flush=True,
+        )
     game = args.game.resolve()
     inspect_game(game)
     name = args.app_name if args.app_name is not None else default_app_name(game.stem)
@@ -169,8 +172,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path, help="input .gam file")
     parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
-    parser.add_argument("--display-scale", choices=("1x", "1.5x", "2x"),
-                        help="9288T defaults to 1x pixel-perfect; optional 1.5x. 9288 uses 2x.")
+    parser.add_argument(
+        "--display-scale",
+        choices=("1x", "1.5x", "2x"),
+        help="9288T defaults to 1x pixel-perfect; optional 1.5x. 9288 uses 2x.",
+    )
     parser.add_argument("--sdk", type=Path, default=DEFAULT_SDK)
     parser.add_argument("--toolchain", type=Path, default=DEFAULT_TOOLCHAIN)
     parser.add_argument("--output", type=Path)

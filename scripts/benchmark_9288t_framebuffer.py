@@ -34,22 +34,37 @@ def main():
     clang = args.toolchain / "bin/clang.exe"
     objcopy = args.toolchain / "bin/llvm-objcopy.exe"
     runtime = args.output / "runtime.o"
-    run([str(objcopy), "--globalize-symbol=native_lcd_span",
-         str(args.runtime_object), str(runtime)])
+    run(
+        [str(objcopy), "--globalize-symbol=native_lcd_span", str(args.runtime_object), str(runtime)]
+    )
     startup = args.output / "start.S"
-    startup.write_text("\n".join([
-        "    .text", "    .globl _start", "_start:",
-        *imm("ld.w", "r5", 0x02200000), "    ld.w %sp, %r5",
-        "    call probe", "    halt", "",
-    ]), encoding="utf-8")
+    startup.write_text(
+        "\n".join(
+            [
+                "    .text",
+                "    .globl _start",
+                "_start:",
+                *imm("ld.w", "r5", 0x02200000),
+                "    ld.w %sp, %r5",
+                "    call probe",
+                "    halt",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     results = {}
     for scenario in ("audit", "blit"):
         for calls in (1, args.calls):
             stem = f"{scenario}-{calls}"
             source, elf = args.output / f"{stem}.c", args.output / f"{stem}.elf"
-            operation = ("c6502_native_present(); ++completed;" if scenario == "audit" else
-                         "for(y=0;y<96;++y) { native_lcd_span(0,19,y,row,255,255); ++completed; }")
-            source.write_text(f"""typedef unsigned char u8; typedef unsigned long u32;
+            operation = (
+                "c6502_native_present(); ++completed;"
+                if scenario == "audit"
+                else "for(y=0;y<96;++y) { native_lcd_span(0,19,y,row,255,255); ++completed; }"
+            )
+            source.write_text(
+                f"""typedef unsigned char u8; typedef unsigned long u32;
 extern struct {{ u8 *ram; }} c6502_native_state;
 extern void c6502_native_present(void);
 extern void native_lcd_span(u32,u32,u32,const u8*,u8,u8);
@@ -62,33 +77,76 @@ u32 probe(void) {{
     for(i=0;i<{calls};++i) {{ {operation} }}
     return completed;
 }}
-""", encoding="utf-8")
+""",
+                encoding="utf-8",
+            )
             assembly = args.output / f"{stem}.S"
-            run([str(clang), "--target=s1c33-none-elf", "-Os", "-ffreestanding",
-                 "-fno-builtin", "-fno-strict-aliasing", "-ffunction-sections",
-                 "-S", str(source), "-o", str(assembly)])
+            run(
+                [
+                    str(clang),
+                    "--target=s1c33-none-elf",
+                    "-Os",
+                    "-ffreestanding",
+                    "-fno-builtin",
+                    "-fno-strict-aliasing",
+                    "-ffunction-sections",
+                    "-S",
+                    str(source),
+                    "-o",
+                    str(assembly),
+                ]
+            )
             guarded, _ = preserve_comparison_flags(assembly.read_text(encoding="utf-8"))
             assembly.write_text(guarded, encoding="utf-8")
-            run([str(clang), "--target=s1c33-none-elf", "-Os", "-ffreestanding",
-                 "-fno-builtin", "-fno-strict-aliasing", "-ffunction-sections",
-                 "-nostdlib", "-Wl,--gc-sections", "-Wl,-Ttext=0x02700000",
-                 str(startup), str(assembly), str(runtime), "-o", str(elf)])
+            run(
+                [
+                    str(clang),
+                    "--target=s1c33-none-elf",
+                    "-Os",
+                    "-ffreestanding",
+                    "-fno-builtin",
+                    "-fno-strict-aliasing",
+                    "-ffunction-sections",
+                    "-nostdlib",
+                    "-Wl,--gc-sections",
+                    "-Wl,-Ttext=0x02700000",
+                    str(startup),
+                    str(assembly),
+                    str(runtime),
+                    "-o",
+                    str(elf),
+                ]
+            )
             frame = args.output / f"{stem}.fb.bin"
-            state = json.loads(run([
-                str(args.emulator), "--steps", "100000000", "--state-json",
-                "--load-elf", str(elf), "--entry", "0x02700000",
-                "--ram-size", "0x100000", "--sdram-size", "0x2000000",
-                "--force-lcdc-240x160-2bpp",
-                "--dump-bin", "0x003c0000:0x2580", str(frame),
-            ]).stdout)
+            state = json.loads(
+                run(
+                    [
+                        str(args.emulator),
+                        "--steps",
+                        "100000000",
+                        "--state-json",
+                        "--load-elf",
+                        str(elf),
+                        "--entry",
+                        "0x02700000",
+                        "--ram-size",
+                        "0x100000",
+                        "--sdram-size",
+                        "0x2000000",
+                        "--force-lcdc-240x160-2bpp",
+                        "--dump-bin",
+                        "0x003c0000:0x2580",
+                        str(frame),
+                    ]
+                ).stdout
+            )
             if not state["halted"] or state["faulted"] or state["unknown_accesses"]:
                 raise RuntimeError(f"{stem}: probe did not finish cleanly: {state}")
             expected_calls = calls if scenario == "audit" else calls * 96
             if int(state["r"][4], 16) != expected_calls:
                 raise RuntimeError(f"{stem}: completed fewer calls than requested")
             state["framebuffer_sha256"] = hashlib.sha256(frame.read_bytes()).hexdigest()
-            (args.output / f"{stem}.json").write_text(
-                json.dumps(state, indent=2), encoding="utf-8")
+            (args.output / f"{stem}.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
             results[stem] = state
         first, repeated = results[f"{scenario}-1"], results[f"{scenario}-{args.calls}"]
         if first["framebuffer_sha256"] != repeated["framebuffer_sha256"]:
@@ -98,9 +156,12 @@ u32 probe(void) {{
             "cycles": repeated["cycles"] - first["cycles"],
             "framebuffer_sha256": first["framebuffer_sha256"],
         }
-    summary = {"scope": "CPU-only; excludes startup; not wall time or game FPS",
-               "runtime_object": str(args.runtime_object.resolve()),
-               "audit": results["audit"], "blit": results["blit"]}
+    summary = {
+        "scope": "CPU-only; excludes startup; not wall time or game FPS",
+        "runtime_object": str(args.runtime_object.resolve()),
+        "audit": results["audit"],
+        "blit": results["blit"],
+    }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
 

@@ -5,7 +5,8 @@
 先构建同版本轻量 Windows 包，再由获 SDK/固件分发授权的维护者执行：
 
 ```powershell
-python scripts/build_full_bundle.py --sdk "9288 SDK路径" --toolchain "工具链路径" `
+python scripts/build_full_bundle.py --sdk "9288 SDK路径" --sdk9288t "9288T SDK路径" `
+  --toolchain "工具链路径" `
   --rom8 "固件目录/8.BIN" --rome "固件目录/E.BIN" `
   --vc-runtime "Visual Studio/VC/Redist/MSVC/版本/x64/Microsoft.VC142.CRT" `
   --authorized-redistribution
@@ -48,7 +49,7 @@ tag 版本必须与两处元数据完全一致。tag build 再次测试并构建
 不需要个人 access token：发布使用该 workflow 的 `GITHUB_TOKEN`。
 仓库或组织如限制 Actions 的写权限，需要管理员允许 release job 的声明权限。
 
-## 分发检查
+## 轻量版分发检查
 
 - ZIP 内 GUI 和 CLI 必须能在没有本项目 Python 环境的情况下运行。
 - `GAMForge-CLI.exe --self-test` 必须返回 PASS，且 `boot_helper=true`。
@@ -57,6 +58,10 @@ tag 版本必须与两处元数据完全一致。tag build 再次测试并构建
 - `licenses/` 保留构建环境的 CPython、Pillow、PyInstaller、Tcl/Tk 许可与版本记录。
 - `toolchain/` 随包提供构建说明和 ABI 补丁，但不包含 LLVM 二进制或 SDK。
 - 用户的 9288 SDK、ROM 和 LLVM 工具链需自行配置；当前没有把这些外部依赖称为“全内置”。
+
+以上依赖排除规则适用于轻量包；获授权的全套包按前述流程附带两种 SDK 头文件、
+固件与工具链，并验证 `FULL-BUNDLE.json` 的目标列表、文件清单及隔离环境转换。
+两种包都不得包含游戏、游戏 EXE、RES 或存档。Release 应优先推荐全套版下载。
 
 在 Windows 本地运行 `python scripts/build_windows.py` 可执行同一打包/自检流程。
 生成文件在 `dist/`，不加入 Git。可选工具链 workflow 只需手动触发，不会在每次应用

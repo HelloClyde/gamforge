@@ -390,9 +390,11 @@ class ConverterApp:
         self.inputs.append(target)
         self.label(left, "画面缩放", 10, bold=True).grid(row=12, column=0, sticky="w", pady=(9, 0))
         self.scale_combo = ttk.Combobox(
-            left, textvariable=self.display_scale,
+            left,
+            textvariable=self.display_scale,
             values=DISPLAY_SCALES[self.target.get()],
-            state="readonly" if self.target.get() == "9288t" else "disabled", width=12,
+            state="readonly" if self.target.get() == "9288t" else "disabled",
+            width=12,
         )
         self.scale_combo.grid(row=12, column=1, sticky="e", pady=(9, 0))
         self.inputs.append(self.scale_combo)

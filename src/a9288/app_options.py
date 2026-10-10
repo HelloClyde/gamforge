@@ -112,9 +112,7 @@ def icon_images(
     return image, four_gray(image.resize((16, 16), Image.Resampling.LANCZOS))
 
 
-def write_icons(
-    destination: Path, source: Path | None = None, *, target: str = "9288"
-) -> None:
+def write_icons(destination: Path, source: Path | None = None, *, target: str = "9288") -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for name, image in zip(("ico1", "ico2"), icon_images(source, target=target)):
         pixels = [v // 85 for v in image.tobytes()]

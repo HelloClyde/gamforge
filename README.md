@@ -33,7 +33,7 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
 
 1. 从 [Releases](https://github.com/HelloClyde/gamforge/releases) 下载 Windows ZIP，
    优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `GAMForge.exe`。
-   当前版本为 [v1.1.2](https://github.com/HelloClyde/gamforge/releases/tag/v1.1.2)。
+   当前版本为 [v1.2.0](https://github.com/HelloClyde/gamforge/releases/tag/v1.2.0)。
 2. 全套版已配好所需 SDK、工具链和固件，无需安装 Python、编译器或手动填写路径。
    不含 `full` 的轻量版仍需在“编译环境”中自行配置这些依赖。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
@@ -42,7 +42,7 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
 全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和轻量版不含它们。
 请保留包内 `dependencies`、`_internal` 目录，不要只复制单个 EXE。支持 Windows 10/11 x64。
 输出 9288 时使用 **9288 SDK**，输出 9288T 时使用 **9288T SDK**；不能用 9588 SDK 替代。
-已发布的 v1.1.2 全套包只含 9288 依赖，不含本次新增的 9288T 支持。
+v1.2.0 全套包同时包含 9288 / 9288T 所需依赖；旧版 v1.1.2 全套包仅支持 9288。
 工具链不是普通 LLVM；构建方法见 [工具链说明](toolchain/README.md)。
 
 名称最多 15 个 GBK 字节（通常 7 个汉字），不支持 emoji。9288 桌面标签采用 EXE

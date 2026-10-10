@@ -34,9 +34,7 @@ def test_byte_halfword_word_stack_offsets_account_for_two_saved_words():
         )
         assert count == 1
         assert f"ld.{operation} %r0, [%sp+{after}]" in text
-    text, _ = preserve_comparison_flags(
-        "cmp %r1, %r2\next 1\nld.w %r0, [%sp+63]\njrne .Ldone\n"
-    )
+    text, _ = preserve_comparison_flags("cmp %r1, %r2\next 1\nld.w %r0, [%sp+63]\njrne .Ldone\n")
     assert "ext 2\n    ld.w %r0, [%sp+1]" in text
 
 
@@ -92,13 +90,36 @@ taken:
     source, elf = tmp_path / "probe.S", tmp_path / "probe.elf"
     source.write_text(fixed, encoding="utf-8")
     subprocess.run(
-        [clang, "--target=s1c33-none-elf", "-nostdlib", "-Wl,-Ttext=0x02700000",
-         str(source), "-o", str(elf)], check=True, capture_output=True,
+        [
+            clang,
+            "--target=s1c33-none-elf",
+            "-nostdlib",
+            "-Wl,-Ttext=0x02700000",
+            str(source),
+            "-o",
+            str(elf),
+        ],
+        check=True,
+        capture_output=True,
     )
     result = subprocess.run(
-        [emulator, "--steps", "100", "--state-json", "--load-elf", str(elf),
-         "--entry", "0x02700000", "--ram-size", "0x100000", "--sdram-size", "0x2000000"],
-        check=True, capture_output=True, text=True,
+        [
+            emulator,
+            "--steps",
+            "100",
+            "--state-json",
+            "--load-elf",
+            str(elf),
+            "--entry",
+            "0x02700000",
+            "--ram-size",
+            "0x100000",
+            "--sdram-size",
+            "0x2000000",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     state = json.loads(result.stdout)
     assert state["halted"] and not state["faulted"]

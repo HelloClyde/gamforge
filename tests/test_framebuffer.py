@@ -298,8 +298,12 @@ int main(void){
     if scale == "1.5x":
         source = "#define C6502_T_SCALE_1_5 1\n" + source
     definitions, source = source.split("#include <assert.h>", 1)
-    source = definitions + (DATA / "runtime/c6502_native_host.h").read_text(encoding="utf-8") + \
-        "\n#include <assert.h>" + source
+    source = (
+        definitions
+        + (DATA / "runtime/c6502_native_host.h").read_text(encoding="utf-8")
+        + "\n#include <assert.h>"
+        + source
+    )
     c = tmp_path / "mirror.c"
     exe = tmp_path / "mirror.exe"
     c.write_text(source, encoding="utf-8")

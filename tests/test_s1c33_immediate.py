@@ -10,9 +10,29 @@ from a9288.compiler.backend import ext_prefix, imm
 
 
 @pytest.mark.parametrize("op", ["ld.w", "cmp", "and", "or", "xor", "add", "sub"])
-@pytest.mark.parametrize("value", [-0x80000000, -256, -33, -32, -1, 0, 31, 32, 63,
-                                   64, 255, 0xFFFF, 0x3FFFF, 0x40000, 0x7FFFF,
-                                   0x80000, 0x7FFFFFFF, 0xFFFFFFFF])
+@pytest.mark.parametrize(
+    "value",
+    [
+        -0x80000000,
+        -256,
+        -33,
+        -32,
+        -1,
+        0,
+        31,
+        32,
+        63,
+        64,
+        255,
+        0xFFFF,
+        0x3FFFF,
+        0x40000,
+        0x7FFFF,
+        0x80000,
+        0x7FFFFFFF,
+        0xFFFFFFFF,
+    ],
+)
 def test_immediate_full_width(op, value):
     emitted = imm(op, "r2", value)
     assert len(emitted) <= 3  # two EXT prefixes plus the operation
@@ -61,20 +81,50 @@ def test_real_preview_core_full_width(tmp_path, operation, constant, initial, ex
     clang, emulator = os.getenv("A9288_TEST_CLANG"), os.getenv("A9288_TEST_C33EMU")
     if not clang or not emulator:
         pytest.skip("optional S1C33 toolchain/9288T preview core are not configured")
-    assembly = "\n".join([
-        "    .text", "    .globl _start", "_start:",
-        *imm("ld.w", "r2", initial), *imm(operation, "r2", constant), "    halt", "",
-    ])
+    assembly = "\n".join(
+        [
+            "    .text",
+            "    .globl _start",
+            "_start:",
+            *imm("ld.w", "r2", initial),
+            *imm(operation, "r2", constant),
+            "    halt",
+            "",
+        ]
+    )
     source, elf = tmp_path / "probe.S", tmp_path / "probe.elf"
     source.write_text(assembly, encoding="utf-8")
     subprocess.run(
-        [clang, "--target=s1c33-none-elf", "-nostdlib", "-Wl,-Ttext=0x02700000",
-         str(source), "-o", str(elf)], check=True, capture_output=True,
+        [
+            clang,
+            "--target=s1c33-none-elf",
+            "-nostdlib",
+            "-Wl,-Ttext=0x02700000",
+            str(source),
+            "-o",
+            str(elf),
+        ],
+        check=True,
+        capture_output=True,
     )
     result = subprocess.run(
-        [emulator, "--steps", "30", "--state-json", "--load-elf", str(elf),
-         "--entry", "0x02700000", "--ram-size", "0x100000", "--sdram-size", "0x2000000"],
-        check=True, capture_output=True, text=True,
+        [
+            emulator,
+            "--steps",
+            "30",
+            "--state-json",
+            "--load-elf",
+            str(elf),
+            "--entry",
+            "0x02700000",
+            "--ram-size",
+            "0x100000",
+            "--sdram-size",
+            "0x2000000",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     state = json.loads(result.stdout)
     assert state["halted"] and not state["faulted"]

@@ -101,11 +101,14 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
     app._preview.assert_called_once_with()
 
 
-@pytest.mark.parametrize("target,requested,expected,geometry", [
-    ("9288", None, "2x", (318, 192, 1, 24)),
-    ("9288T", None, "1x", (159, 96, 40, 32)),
-    ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
-])
+@pytest.mark.parametrize(
+    "target,requested,expected,geometry",
+    [
+        ("9288", None, "2x", (318, 192, 1, 24)),
+        ("9288T", None, "1x", (159, 96, 40, 32)),
+        ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
+    ],
+)
 def test_display_scale_defaults_and_geometry(target, requested, expected, geometry):
     assert display_scale(target, requested) == expected
     assert display_geometry(target, requested) == geometry
@@ -118,9 +121,16 @@ def test_reject_incompatible_scales(target, scale):
 
 
 def test_gui_optional_1_5x_is_forwarded(tmp_path):
-    conversion = Conversion(tmp_path / "g.gam", "游戏", None, tmp_path / "g.exe",
-                            tmp_path / "sdk", tmp_path / "tools",
-                            target="9288t", display_scale="1.5x")
+    conversion = Conversion(
+        tmp_path / "g.gam",
+        "游戏",
+        None,
+        tmp_path / "g.exe",
+        tmp_path / "sdk",
+        tmp_path / "tools",
+        target="9288t",
+        display_scale="1.5x",
+    )
     command = conversion.command(tmp_path / "work")
     assert command[command.index("--display-scale") + 1] == "1.5x"
 
@@ -128,12 +138,17 @@ def test_gui_optional_1_5x_is_forwarded(tmp_path):
 def test_gui_remembers_t_scale_across_targets():
     interpreter = tk.Tcl()
     app = SimpleNamespace(
-        sdk_paths={"9288": "sdk8", "9288t": "sdkT"}, current_target="9288t",
-        sdk=tk.StringVar(interpreter, "sdkT"), target=tk.StringVar(interpreter, "9288"),
-        target_display=tk.StringVar(interpreter, "9288T"), target_hint=Mock(),
+        sdk_paths={"9288": "sdk8", "9288t": "sdkT"},
+        current_target="9288t",
+        sdk=tk.StringVar(interpreter, "sdkT"),
+        target=tk.StringVar(interpreter, "9288"),
+        target_display=tk.StringVar(interpreter, "9288T"),
+        target_hint=Mock(),
         display_scales={"9288": "2x", "9288t": "1x"},
-        display_scale=tk.StringVar(interpreter, "1.5x"), scale_combo=Mock(),
-        _scale_changed=Mock(), _preview=Mock(),
+        display_scale=tk.StringVar(interpreter, "1.5x"),
+        scale_combo=Mock(),
+        _scale_changed=Mock(),
+        _preview=Mock(),
     )
     ConverterApp._target_changed(app)
     assert app.display_scale.get() == "2x"
@@ -145,8 +160,11 @@ def test_gui_remembers_t_scale_across_targets():
 
 def test_gui_pixel_perfect_hint():
     interpreter = tk.Tcl()
-    app = SimpleNamespace(target=tk.StringVar(interpreter, "9288t"),
-                          display_scale=tk.StringVar(interpreter, "1x"), target_hint=Mock())
+    app = SimpleNamespace(
+        target=tk.StringVar(interpreter, "9288t"),
+        display_scale=tk.StringVar(interpreter, "1x"),
+        target_hint=Mock(),
+    )
     ConverterApp._scale_changed(app)
     assert "159 × 96 · 1x 点对点居中" in app.target_hint.configure.call_args.kwargs["text"]
 
