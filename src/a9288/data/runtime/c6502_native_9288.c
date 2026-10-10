@@ -11,12 +11,24 @@
 static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
     T_GUI_WPARAM wparam, T_GUI_LPARAM lparam)
 {
+#ifdef C6502_TARGET_9288S
+    if (message == MSG_LBUTTONDOWN || message == MSG_LBUTTONDBLCLK || message == MSG_LBUTTONUP ||
+        message == MSG_MOUSEMOVE) {
+        c6502_native_pointer(message, lparam);
+        /* Preserve firmware capture/release, essential for the next tap. */
+        return fnGUI_DefaultMainWinProc(window, message, wparam, lparam);
+    }
+#endif
     /* After a resource failure, let the host acknowledge repaint requests
        from its modal dialog. The direct-LCD game paint path intentionally
        does not paint a host client DC and would keep those requests pending. */
     if (message == MSG_ERASEBKGND && !c6502_native_resource_error()) return 0;
     if (message == MSG_PAINT && c6502_native_state.window == window &&
         !c6502_native_resource_error()) {
+#ifdef C6502_TARGET_9288S
+        T_GUI_HDC dc = fnGUI_BeginPaint(window);
+        fnGUI_EndPaint(window, dc);
+#endif
         c6502_native_invalidate_screen();
         return 0;
     }
@@ -53,7 +65,13 @@ T_WORD App_Main(void)
         desktop[index] = lcd[index];
     for (index = 0; index < sizeof(info); ++index)
         ((c6502_u8 *)&info)[index] = 0;
-    info.dwStyle = WS_VISIBLE | WS_CAPTION;
+    info.dwStyle = WS_VISIBLE;
+#ifdef C6502_TARGET_9288S
+    info.dwExStyle = WS_EX_TOPMOST;
+#endif
+#ifndef C6502_TARGET_9288S
+    info.dwStyle |= WS_CAPTION;
+#endif
     info.spCaption = (const T_BYTE *)NATIVE_TITLE;
     info.MainWindowProc = native_window_proc;
     info.rx = C6502_HOST_WIDTH; info.by = C6502_HOST_HEIGHT;
@@ -70,14 +88,30 @@ T_WORD App_Main(void)
     (void)fnGUI_SetActiveWindow(window);
     (void)fnGUI_SetFocus(window);
     c6502_native_state.window = window;
-    /* No host GUI timer/message loop during native gameplay. Guest timing
-       is driven by CTM; keys are scanned directly into the game's FIFO. */
+#ifdef C6502_TARGET_9288S
+    /* Launch cleanup can run late and disable FPT6 or restore desktop
+       focus. Settle before the final re-arm, as in the verified S port.
+       Timer #2 ONLY bounds IAL collection, never drives guest execution. */
+    tpDL_GUITable->EnableKeyBoard();
+    (void)fnGUI_SetTimer(window, 2, 1);
+    (void)tpDL_ROS33Table->ros33_dly_tsk(10);
+    fnGUI_ReleaseCapture();
+    *(volatile c6502_u8 *)0x00040287u = 0x10u;
+    *(volatile c6502_u8 *)0x00040277u |= 0x10u;
+    (void)fnGUI_SetActiveWindow(window);
+    (void)fnGUI_SetFocus(window);
+#endif
+    /* CTM drives gameplay; GPIO keys feed the local FIFO. Only S pumps
+       calibrated mouse events (touch coordinates are not GPIO keys). */
     /* Only used to rasterise glyphs into our explicit VirtualScr. The
        captioned client DC adds its screen origin to glyph coordinates. */
     c6502_native_state.hdc = fnGUI_GetDC(HWND_DESKTOP);
     c6502_native_present();
     c6502_native_perf_begin();
     c6502_native_enter(c6502_entry_regs);
+#ifdef C6502_TARGET_9288S
+    (void)fnGUI_KillTimer(window, 2);
+#endif
     c6502_native_perf_end();
     /* Rejoin the host message framework only after guest execution ends.
        Timer #1 drives the release/host-input handoff, not the game. */
@@ -130,6 +164,9 @@ T_WORD App_Main(void)
            from 9288_sdk.md; never consume the loader's global Quit. */
         for (round = 0u; round < 2u; ++round) {
             c6502_u32 pending = 32u, polls = 262144u;
+#ifdef C6502_TARGET_9288S
+            if (!fnGUI_HavePendingMessage(launcher)) break;
+#endif
             if (!fnGUI_GetMessage(&message, launcher)) break;
             native_dispatch_teardown(&message);
             while (pending-- && fnGUI_HavePendingMessage(launcher)) {

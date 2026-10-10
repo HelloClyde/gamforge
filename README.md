@@ -4,15 +4,16 @@
 
 GAMForge · GAM 原生重编译器
 
-将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 / 9288T 原生程序。
+将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 / 9288T / 9288S / 听说王600 原生程序。
 
-Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
+Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 applications.
 
 [![CI](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml/badge.svg)](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 BBK 9288 / 9288T 的 S1C33 原生程序**，
-封装为安装在“娱乐”分类中的独立 KF2 EXE。提供 Windows 图形界面和命令行工具。
+把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 S1C33 原生程序**，
+封装为独立 EXE：9288/T 使用 KF2，9288S / 听说王600 使用 D300。
+安装分类为“娱乐”，听说王600 为“游戏”。提供 Windows 图形界面和命令行工具。
 
 > 当前是实验性编译器，不是“任意 GAM 均兼容”的成品。编译成功不代表全流程或
 > 真机性能已经验证。输出不是 Windows EXE，也不是携带游戏的播放器。
@@ -21,7 +22,10 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
 
 - 选择 GAM，查看标题、体积与入口；设置程序名称和图标。
 - 输出机型可选 9288（320×240，2×）或 9288T（240×160，默认 1× 点对点、可选 1.5×），分别使用对应 SDK。
+- 新增实验性 9288S（160×240）输出：上半屏点对点游戏，下半屏触摸软键盘，使用独立 9288S SDK。
+- 新增实验性听说王600 输出：复用 S 的运行载荷和软键盘，使用独立 `0xD500` 包头标记及“游戏”分类。
 - 40×40 / 16×16 四灰阶图标预览；9288 保留系统边框，9288T 不添加白框背景。
+- 9288S 使用原生 32×32 双帧四灰阶图标，D300 封装与官方 Apmk 逐字节对照验证。
 - 一键原生转换，显示真实阶段、耗时与日志，支持取消。
 - 名称写入 KF2 和应用标题；默认输出文件名跟随名称。
 - 编译成功、链接完整及体积检查通过后才替换旧 EXE。
@@ -33,16 +37,17 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
 
 1. 从 [Releases](https://github.com/HelloClyde/gamforge/releases) 下载 Windows ZIP，
    优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `GAMForge.exe`。
-   当前版本为 [v1.2.0](https://github.com/HelloClyde/gamforge/releases/tag/v1.2.0)。
+   当前版本为 [v1.3.0](https://github.com/HelloClyde/gamforge/releases/tag/v1.3.0)。
 2. 全套版已配好所需 SDK、工具链和固件，无需安装 Python、编译器或手动填写路径。
    不含 `full` 的轻量版仍需在“编译环境”中自行配置这些依赖。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
-4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动。
+4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动（听说王600 为“游戏”）。
 
 全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和轻量版不含它们。
 请保留包内 `dependencies`、`_internal` 目录，不要只复制单个 EXE。支持 Windows 10/11 x64。
-输出 9288 时使用 **9288 SDK**，输出 9288T 时使用 **9288T SDK**；不能用 9588 SDK 替代。
-v1.2.0 全套包同时包含 9288 / 9288T 所需依赖；旧版 v1.1.2 全套包仅支持 9288。
+9288 / 9288T 分别使用对应 SDK；9288S / 听说王600 的当前后端共用 **9288S SDK**。
+这不代表所有机型的 SDK 可以互换，尤其不能使用 9588 SDK 或 9288T 头文件编译 S / 600。
+v1.3.0 全套包包含四个输出目标所需依赖；v1.2.0 支持 9288 / 9288T，v1.1.2 仅支持 9288。
 工具链不是普通 LLVM；构建方法见 [工具链说明](toolchain/README.md)。
 
 名称最多 15 个 GBK 字节（通常 7 个汉字），不支持 emoji。9288 桌面标签采用 EXE
@@ -100,6 +105,43 @@ python -m venv .venv
 适配范围与验证记录见 [9288T 输出说明](docs/9288t-target.md)。
 **9288T 已验证《魔塔》《伏魔记》的模拟器启动；仍需真机验证，不保证任意 GAM 或完整游戏流程兼容。**
 
+### 输出 9288S EXE（v1.3.0，实验性）
+
+界面选择“输出机型 → 9288S”，使用含 `Down_Include/Dsys.h` 的 **9288S SDK** 根目录。
+机型分别记忆 SDK 路径；CLI 添加 `--target 9288s --sdk "你的9288S SDK根目录"`，
+或设置 `A9288S_SDK`。v1.3.0 全套包已包含此目标所需依赖。
+
+9288S 物理屏为 160×240、2-bpp、每行 40 字节。上半屏中央（x=0、y=12）以 1×
+展示 159×96 游戏画面，按 160×96 区域输出，最右隐藏位留白，不裁切或插值。
+下半屏 y=120..239 提供数字、QWERTY 字母、空格、翻页、方向、ENTER、ESC 触摸键。
+ENTER 为游戏确定，ESC 为游戏退出/菜单，遵循各游戏本身的逻辑。
+实体方向、确定和退出键同样可用；按下进入私有 FIFO，绘图检查点只采集、不消费。
+触屏使用 SDK 校准后的窗口坐标和成对 DOWN/UP 消息，不调用固件私有触屏函数。
+
+输出使用 **D300**，不是改名的 KF2；两者不能交叉安装。支持单 EXE 和 EXE＋外置 RES，
+安装路径与上述相同。单元/像素回归和实际编译不代表所有游戏、真机触控、存档及性能均已验证。
+平台实现说明见 [9288S 适配](docs/9288s.md)。
+
+### 输出听说王600 EXE（v1.3.0，实验性）
+
+界面选择“输出机型 → 听说王600”；CLI 添加 `--target tsw600`。
+当前后端与 S 共用含 `Down_Include/Dsys.h` 的 9288S SDK 和 160×240 分屏运行载荷，
+但采用听说王600 的 **D300 `0xD500` 兼容标记及“游戏”分类**，不能直接安装 S 的 EXE。
+使用 v1.3.0 全套包无需配置路径；源码可用 `--sdk` 或 `ATSW600_SDK`，未设置时回退到 `A9288S_SDK`。
+GUI 为两种目标分别记忆 SDK 设置。图标为不添加 9288 白框的 32×32 双帧四灰阶图标。
+
+支持单 EXE 和 EXE＋外置 RES；EXE 放 `A:\系统\程序\`，RES 放 `A:\系统\数据\`。
+已检查原机包头、官方 Apmk 封装、共享载荷与像素回归；**尚无 600 真机启动、触控和完整流程验证**。
+S 模拟器验证不能替代 600 验证。实现依据及边界见 [听说王600 适配](docs/tsw600.md)。
+
+## 输出示例
+
+下图为本项目生成的《魔塔》原生程序在 **9288S 模拟器**中的实际画面：
+上半屏点对点游戏，下半屏触摸软键盘。它不是听说王600 真机验证，
+也不表示工具包包含该游戏。
+
+![9288S 模拟器：魔塔剧情与触摸软键盘](docs/images/9288s-mota.png)
+
 ## 项目结构
 
 ```text
@@ -107,14 +149,15 @@ src/a9288/
   gui.py, cli.py       界面与公共转换入口
   app_options.py      GAM 校验、名称和图标策略
   paths.py            安装路径、工作区、子进程协议
-  targets.py          9288 / 9288T 输出机型与 SDK 配置
+  targets.py          各输出机型、显示和 SDK 配置
   compiler/
     frontend.py       函数、调用关系和控制流恢复
     cfg.py, isa.py    6502 解码与控制流基础设施
     semantics.py     C6502 编译器语义模板
     functions.py     函数分组与跨 bank 目标恢复
     backend.py       S1C33 原生代码生成
-    build.py, kf2.py 原生运行库链接与 KF2 封装
+    build.py           原生运行库链接
+    kf2.py, d300.py    KF2 / D300 分机型封装
     boot.py          PC 离线启动状态准备
     compression.py   资源压缩
   data/

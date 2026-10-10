@@ -123,6 +123,8 @@ def pack_kf2(
     from a9288.targets import target_profile
 
     profile = target_profile(target)
+    if profile.executable_format != "KF2":
+        raise ValueError(f"{profile.name} requires {profile.executable_format}, not KF2")
     if len(payload) > APP_MAX_PAYLOAD_SIZE:
         raise SystemExit(
             "9288 KF2 payload is too large for the application RAM window: "

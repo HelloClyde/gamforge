@@ -1,5 +1,6 @@
 """Create a tested portable Windows ZIP; never collect user SDK/ROM/game files."""
 
+import argparse
 import hashlib
 import importlib.metadata
 import json
@@ -57,6 +58,13 @@ def collect_licenses(folder: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dist-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--work-dir", type=Path, default=ROOT / "build/pyinstaller")
+    parser.add_argument("--archive-name", default=f"gamforge-{__version__}-windows-x64.zip")
+    args = parser.parse_args()
+    if Path(args.archive_name).name != args.archive_name or not args.archive_name.endswith(".zip"):
+        parser.error("archive-name must be a ZIP filename without directories")
     if os.name != "nt":
         raise SystemExit("Build the Windows distribution on Windows.")
     build_helper(bundled_helper())
@@ -68,15 +76,15 @@ def main():
             "--noconfirm",
             "--clean",
             "--distpath",
-            str(ROOT / "dist"),
+            str(args.dist_dir.resolve()),
             "--workpath",
-            str(ROOT / "build/pyinstaller"),
+            str(args.work_dir.resolve()),
             str(ROOT / "packaging/windows.spec"),
         ],
         cwd=ROOT,
         check=True,
     )
-    folder = ROOT / "dist/GAMForge"
+    folder = args.dist_dir.resolve() / "GAMForge"
     for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md"):
         shutil.copyfile(ROOT / name, folder / name)
     shutil.copytree(ROOT / "docs", folder / "docs", dirs_exist_ok=True)
@@ -110,7 +118,7 @@ def main():
     (folder / "MANIFEST.sha256.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    archive = ROOT / "dist" / f"gamforge-{__version__}-windows-x64.zip"
+    archive = args.dist_dir.resolve() / args.archive_name
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zipped:
         for path in sorted(folder.rglob("*")):
             if path.is_file():

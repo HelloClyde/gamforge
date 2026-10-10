@@ -35,7 +35,7 @@ def isolated_environment(work):
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.upper().startswith(("A9288_", "A9288T_", "PYTHON", "CONDA"))
+        if not k.upper().startswith(("A9288_", "A9288T_", "A9288S_", "ATSW600_", "PYTHON", "CONDA"))
         and k.upper() not in compiler_overrides
     }
     env["LOCALAPPDATA"] = str(work / "profile")
@@ -50,6 +50,11 @@ def main():
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument(
         "--sdk9288t", type=Path, help="Optional authorized 9288T SDK root (include/)"
+    )
+    parser.add_argument(
+        "--sdk9288s",
+        type=Path,
+        help="Optional authorized 9288S/TSW600 shared SDK root (Down_Include/)",
     )
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--rom8", type=Path, required=True)
@@ -79,6 +84,8 @@ def main():
         parser.error("9288 SDK Down_Include/Dsys.h is required")
     if args.sdk9288t and not (args.sdk9288t / "include/Dsys.h").is_file():
         parser.error("9288T SDK include/Dsys.h is required")
+    if args.sdk9288s and not (args.sdk9288s / "Down_Include/Dsys.h").is_file():
+        parser.error("9288S SDK Down_Include/Dsys.h is required")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="full-bundle-", dir=args.output.parent) as temporary:
         work = Path(temporary)
@@ -101,6 +108,14 @@ def main():
                 dest = deps / "sdk9288t/include" / header.relative_to(t_headers)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(header, dest)
+        if args.sdk9288s:
+            s_headers = args.sdk9288s / "Down_Include"
+            for header in s_headers.rglob("*.h"):
+                dest = deps / "sdk9288s/Down_Include" / header.relative_to(s_headers)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(header, dest)
+            if (args.sdk9288s / "readme.txt").is_file():
+                shutil.copyfile(args.sdk9288s / "readme.txt", deps / "sdk9288s/readme.txt")
         (deps / "roms").mkdir()
         shutil.copyfile(args.rom8, deps / "roms/8.BIN")
         shutil.copyfile(args.rome, deps / "roms/E.BIN")
@@ -143,9 +158,14 @@ def main():
             "edition": "full",
             "sdk_firmware_redistribution_authorized": True,
             "sdk_scope": "9288 Down_Include headers"
-            + (" and 9288T include headers" if args.sdk9288t else ""),
-            "targets": ["9288", "9288t"] if args.sdk9288t else ["9288"],
+            + (" and 9288T include headers" if args.sdk9288t else "")
+            + (" and shared 9288S/TSW600 Down_Include headers" if args.sdk9288s else ""),
+            "targets": ["9288"]
+            + (["9288t"] if args.sdk9288t else [])
+            + (["9288s", "tsw600"] if args.sdk9288s else []),
             "sdk9288t_included": bool(args.sdk9288t),
+            "sdk9288s_included": bool(args.sdk9288s),
+            "tsw600_shared_sdk_included": bool(args.sdk9288s),
             "toolchain_version": subprocess.check_output(
                 [str(tools / "clang.exe"), "--version"], env=env, text=True
             ).splitlines()[0],

@@ -72,8 +72,11 @@ def c_name_definition(name: str) -> str:
 def icon_images(
     source: Path | None = None, *, target: str = "9288"
 ) -> tuple[Image.Image, Image.Image]:
-    """Preview KF2 resources: 9288 adds its frame; 9288T uses full-size artwork."""
-    framed = target_profile(target).name == "9288"
+    """Host-specific artwork: framed KF2 on 9288, plain T/S artwork."""
+    profile = target_profile(target)
+    framed = profile.name == "9288"
+    large_size = profile.icon_size
+    small_size = 32 if profile.executable_format == "D300" else 16
 
     def four_gray(image):
         return image.point(lambda v: 0 if v < 64 else 85 if v < 128 else 170 if v < 213 else 255)
@@ -89,8 +92,12 @@ def icon_images(
             return tuple(images)
         # The bundled default is already framed. Use only its original inner art
         # for 9288T; do not crop user-supplied images, whose borders may be artwork.
-        image = four_gray(images[0].crop((5, 5, 35, 35)).resize((40, 40), Image.Resampling.LANCZOS))
-        return image, four_gray(image.resize((16, 16), Image.Resampling.LANCZOS))
+        image = four_gray(
+            images[0]
+            .crop((5, 5, 35, 35))
+            .resize((large_size, large_size), Image.Resampling.LANCZOS)
+        )
+        return image, four_gray(image.resize((small_size, small_size), Image.Resampling.LANCZOS))
     with Image.open(source) as loaded:
         if loaded.width * loaded.height > 25_000_000:
             raise ValueError("图标图片过大，请使用不超过 2500 万像素的图片。")
@@ -98,7 +105,7 @@ def icon_images(
     box = art.getchannel("A").getbbox()
     if box is None:
         raise ValueError("图片完全透明，请选择有可见内容的图标。")
-    size = 30 if framed else 40
+    size = 30 if framed else large_size
     art = ImageOps.contain(art.crop(box), (size, size), Image.Resampling.LANCZOS)
     square = Image.new("RGBA", (size, size), "white")
     square.alpha_composite(art, ((size - art.width) // 2, (size - art.height) // 2))
@@ -109,7 +116,7 @@ def icon_images(
         frame.paste(image, (5, 5))
         image = frame
     image = four_gray(image)
-    return image, four_gray(image.resize((16, 16), Image.Resampling.LANCZOS))
+    return image, four_gray(image.resize((small_size, small_size), Image.Resampling.LANCZOS))
 
 
 def write_icons(destination: Path, source: Path | None = None, *, target: str = "9288") -> None:

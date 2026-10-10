@@ -26,7 +26,10 @@ def test_compiled_lcd_stores_cannot_bypass_mirror(tmp_path):
     assert "    ld.w %r11, [%sp+0]\n    add %sp, 4\n    ret" in writes
 
 
-@pytest.mark.parametrize("target,scale", [("9288", "2x"), ("9288t", "1x"), ("9288t", "1.5x")])
+@pytest.mark.parametrize(
+    "target,scale",
+    [("9288", "2x"), ("9288t", "1x"), ("9288t", "1.5x"), ("9288s", "1x"), ("tsw600", "1x")],
+)
 def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, target, scale):
     cc = shutil.which("gcc")
     if not cc:
@@ -58,7 +61,7 @@ typedef unsigned char c6502_u8;typedef unsigned short c6502_u16;typedef unsigned
 #define C6502_GUEST_HEIGHT 96u
 #define C6502_FRAME_STRIDE C6502_HOST_STRIDE
 #define C6502_FRAME_HEIGHT C6502_HOST_HEIGHT
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
 #ifdef C6502_T_SCALE_1_5
 #define FULL_FRAME_WRITE_BYTES 8640
 #define TILE_WRITE_BYTES 144
@@ -75,7 +78,7 @@ typedef unsigned char c6502_u8;typedef unsigned short c6502_u16;typedef unsigned
 static unsigned char ram[32768],game[12288],c6502_resource_scratch[1920];
 static unsigned char host_frame[C6502_HOST_FRAME_BYTES] __attribute__((aligned(4)));
 static unsigned char expected[C6502_HOST_FRAME_BYTES],before[C6502_HOST_FRAME_BYTES];
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
 static unsigned char c6502_t_frame_shadow[9600] __attribute__((aligned(4)));
 #endif
 #define C6502_FRAMEBUFFER host_frame
@@ -101,18 +104,22 @@ static void reference(void){
  memset(expected,255,sizeof(expected));
  for(unsigned y=0;y<96;++y)for(unsigned x=0;x<159;++x){
   unsigned bit=ram[lcd_address(x/8,y)]&(128>>(x%8));
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
 #ifdef C6502_T_SCALE_1_5
   if(bit)for(unsigned yy=8+(y*3+1)/2;yy<8+((y+1)*3+1)/2;++yy)
    for(unsigned xx=(x*3+1)/2;xx<((x+1)*3+1)/2;++xx)
 #else
-  if(bit)for(unsigned yy=32+y;yy<33+y;++yy)for(unsigned xx=40+x;xx<41+x;++xx)
+  if(bit)for(unsigned yy=C6502_HOST_VIEW_Y+y;yy<C6502_HOST_VIEW_Y+y+1;++yy)
+   for(unsigned xx=C6502_HOST_VIEW_X+x;xx<C6502_HOST_VIEW_X+x+1;++xx)
 #endif
 #else
   if(bit)for(unsigned yy=24+y*2;yy<26+y*2;++yy)for(unsigned xx=1+x*2;xx<3+x*2;++xx)
 #endif
    expected[yy*C6502_FRAME_STRIDE+xx/4]&=~(3<<(6-2*(xx%4)));
  }
+#ifdef C6502_TARGET_9288S
+ native_s_keyboard_paint(expected);
+#endif
  assert(!memcmp(host_frame,expected,sizeof(expected)));
 }
 /* Independent pixel/byte oracle, including observable overlapping reads. */
@@ -206,7 +213,7 @@ int main(void){
  memset(host_frame,0x69,sizeof(host_frame));memcpy(before,host_frame,sizeof(before));
  guest_write(0x413,0xaa);assert(!memcmp(before,host_frame,sizeof(before))); /* before attach */
  c6502_native_present();reference();
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
  /* Aligned word groups, every scalar prefix/tail, both vertical scales,
     the hidden final bit and the exceptional folded row 65. */
  unsigned ys_span[]={0,1,64,65,66,95};unsigned char span[20];
@@ -282,7 +289,7 @@ int main(void){
  c6502_native_present();reference();
  assert(c6502_perf.framebuffer_audit_words-audits==2400);
  assert(c6502_perf.framebuffer_repaired_words==repaired);
- host_frame[8*60+31]^=1;c6502_native_present();reference();
+ host_frame[8*C6502_HOST_STRIDE+31]^=1;c6502_native_present();reference();
  assert(c6502_perf.framebuffer_repaired_words-repaired==1);
  assert(c6502_perf.framebuffer_bytes-bytes==4); /* one corrupted word, not an entire frame */
 #endif
@@ -295,6 +302,8 @@ int main(void){
     )
     if target == "9288t":
         source = "#define C6502_TARGET_9288T 1\n" + source
+    elif target in ("9288s", "tsw600"):
+        source = "#define C6502_TARGET_9288S 1\n" + source
     if scale == "1.5x":
         source = "#define C6502_T_SCALE_1_5 1\n" + source
     definitions, source = source.split("#include <assert.h>", 1)
@@ -307,5 +316,7 @@ int main(void){
     c = tmp_path / "mirror.c"
     exe = tmp_path / "mirror.exe"
     c.write_text(source, encoding="utf-8")
-    subprocess.run([cc, "-O2", "-Wall", str(c), "-o", str(exe)], check=True)
+    subprocess.run(
+        [cc, "-O2", "-Wall", "-I", str(DATA / "runtime"), str(c), "-o", str(exe)], check=True
+    )
     subprocess.run([str(exe)], check=True, timeout=30)

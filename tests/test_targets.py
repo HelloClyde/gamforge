@@ -107,6 +107,8 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
         ("9288", None, "2x", (318, 192, 1, 24)),
         ("9288T", None, "1x", (159, 96, 40, 32)),
         ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
+        ("9288s", None, "1x", (159, 96, 0, 12)),
+        ("tsw600", None, "1x", (159, 96, 0, 12)),
     ],
 )
 def test_display_scale_defaults_and_geometry(target, requested, expected, geometry):
@@ -197,7 +199,7 @@ def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
         root.destroy()
 
 
-@pytest.mark.parametrize("target", ["9288", "9288t"])
+@pytest.mark.parametrize("target", ["9288", "9288t", "9288s", "tsw600"])
 def test_gui_preview_uses_selected_target(target):
     interpreter = tk.Tcl()
     app = SimpleNamespace(

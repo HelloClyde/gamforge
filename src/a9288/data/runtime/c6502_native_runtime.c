@@ -92,7 +92,7 @@ static c6502_u8 c6502_frame_valid;
 static c6502_u8 c6502_output_ready;
 static c6502_u8 c6502_previous_frame[1920];
 static c6502_u32 c6502_expand_2x[256];
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
 /* The exact packed output, NOT a deferred drawing surface. Every mapped
    write updates this and physical VRAM immediately. Audit compares words
    against it instead of rescaling 1,920 guest bytes at every input wait.
@@ -729,7 +729,11 @@ static void rectangle_clear(
     }
 }
 
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_TARGET_9288S
+#include "c6502_native_softkeys.h"
+#endif
+
+#ifdef C6502_HOST_PACKED_1X
 #ifdef C6502_T_SCALE_1_5
 /* Twelve host pixels per guest byte. Each guest pixel occupies 2,1,2,1...
  * pixels, retaining every source pixel on the 240x160 host. */
@@ -900,6 +904,9 @@ static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
         c6502_u32 *words = (c6502_u32 *)c6502_t_frame_shadow;
         for (x = 0u; x < C6502_HOST_FRAME_BYTES / 4u; ++x) words[x] = 0xffffffffu;
         for (x = 0u; x < 256u; ++x) c6502_expand_2x[x] = native_t_expand((c6502_u8)x);
+#ifdef C6502_TARGET_9288S
+        native_s_keyboard_paint(c6502_t_frame_shadow);
+#endif
     }
     for (y = 0u; y < C6502_GUEST_HEIGHT; ++y) {
         c6502_u8 row[20], *previous = c6502_previous_frame + y * 20u;
@@ -920,10 +927,15 @@ static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
 #else
             c6502_u8 *out = c6502_t_frame_shadow +
                 (C6502_VIEW_Y + y) * C6502_FRAME_STRIDE + C6502_HOST_VIEW_X / 4u;
-            *(c6502_u16 *)out = (c6502_u16)c6502_expand_2x[row[0]];
-            for (x = 1u; x < 19u; x += 2u)
+            x = 0u;
+            if ((c6502_u32)out & 3u) {
+                *(c6502_u16 *)out = (c6502_u16)c6502_expand_2x[row[0]];
+                x = 1u;
+            }
+            for (; x + 1u < 20u; x += 2u)
                 *(c6502_u32 *)(out + x * 2u) = native_t_pack2(row + x);
-            *(c6502_u16 *)(out + 38u) = (c6502_u16)c6502_expand_2x[row[19]];
+            if (x < 20u)
+                *(c6502_u16 *)(out + x * 2u) = (c6502_u16)c6502_expand_2x[row[x]];
 #endif
             for (x = 0u; x < 20u; ++x) previous[x] = row[x];
             ++changed;
@@ -942,7 +954,7 @@ void c6502_native_present(void)
     c6502_u32 started = native_clock(), changed = 0u;
     ++c6502_perf.presents;
 
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
     {
         const c6502_u32 *expected = (const c6502_u32 *)c6502_t_frame_shadow;
         volatile c6502_u32 *physical = (volatile c6502_u32 *)frame;
@@ -1018,7 +1030,7 @@ void c6502_native_present(void)
     c6502_output_ready = 1u;
     c6502_perf.dirty_rows += changed;
     ++c6502_perf.submissions;
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
     {
         c6502_u32 finished = native_clock();
         c6502_perf.present_ticks += finished - started;
@@ -1057,7 +1069,7 @@ static void native_lcd_write(c6502_u16 address)
         if (y >= 96u) return;
     }
     bits = c6502_native_state.ram[address];
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
     native_t_write_byte(x, y, bits);
 #else
     if (x == 19u) bits &= 0xfeu;
@@ -1077,7 +1089,7 @@ static void native_lcd_write(c6502_u16 address)
     ++c6502_perf.mapped_lcd_bytes;
     c6502_perf.framebuffer_bytes += 8u;
 #endif
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
     ++c6502_perf.mapped_lcd_bytes;
 #endif
     /* Also sample within a full-screen blit, not just between drawing APIs.
@@ -1140,6 +1152,91 @@ static void write_psr(c6502_u32 value)
 #include "c6502_native_exit.h"
 #include "c6502_native_clock.h"
 
+#ifdef C6502_TARGET_9288S
+static c6502_u8 c6502_s_pumping;
+static c6502_u32 c6502_s_pump_batches;
+static c6502_u32 c6502_s_touch_waits;
+static c6502_u32 c6502_s_last_pointer_message;
+static c6502_u32 c6502_s_last_pointer_position;
+static c6502_u32 c6502_s_last_pointer_down;
+
+/* Calibrated client coordinates, not the private/raw IAL pointer API.
+ * Snapshot EACH edge, including down/up received in a single pump batch. */
+void c6502_native_pointer(T_WORD message, T_GUI_LPARAM lparam)
+{
+    c6502_u8 previous = c6502_s_touch_key, current[8];
+    c6502_u32 now;
+    ++c6502_s_touch_events;
+    c6502_s_last_pointer_message = message;
+    c6502_s_last_pointer_position = lparam;
+    if (message == MSG_LBUTTONDOWN || message == MSG_LBUTTONDBLCLK)
+        c6502_s_last_pointer_down = lparam;
+    if (message == MSG_LBUTTONUP) {
+        c6502_s_touch_down = 0u;
+        c6502_s_touch_key = 0xffu;
+    } else {
+        if (message == MSG_LBUTTONDOWN || message == MSG_LBUTTONDBLCLK)
+            c6502_s_touch_down = 1u;
+        if (c6502_s_touch_down && c6502_input_active)
+            c6502_s_touch_key = native_s_hit_key((short)(lparam & 0xffffu),
+                                                (short)(lparam >> 16));
+    }
+    if (previous != c6502_s_touch_key) {
+        if (c6502_s_touch_key != 0xffu) ++c6502_s_touch_presses;
+        if (c6502_output_ready) {
+            c6502_u32 i;
+            native_s_keyboard_paint(c6502_t_frame_shadow);
+            /* Lower half only: never flush a partially drawn game frame. */
+            for (i = C6502_S_KEYBOARD_Y * C6502_HOST_STRIDE / 4u;
+                 i < C6502_HOST_FRAME_BYTES / 4u; ++i)
+                ((volatile c6502_u32 *)C6502_FRAMEBUFFER)[i] =
+                    ((c6502_u32 *)c6502_t_frame_shadow)[i];
+        }
+    }
+    if (!c6502_input_active) return;
+    now = native_clock();
+    native_s_matrix(current, *hardware_byte(C6502_K5_DATA_ADDRESS),
+                     *hardware_byte(C6502_PORT0_DATA_ADDRESS));
+    native_key_snapshot(current, now);
+}
+
+static void native_s_pump(void)
+{
+    T_GUI_HWND window = c6502_native_state.window;
+    T_GUI_Msg message;
+    c6502_u32 pending = 16u;
+    if (!window || c6502_s_pumping) return;
+    c6502_s_pumping = 1u;
+    /* The S touch task is cooperative. Yield without waiting on an empty
+       GUI queue; guest timing still comes from the hardware CTM clock. */
+    if (!(++c6502_s_pump_batches & 31u))
+        (void)tpDL_ROS33Table->ros33_dly_tsk(1);
+    else (void)tpDL_ROS33Table->ros33_rot_rdq(0);
+    while (pending-- && fnGUI_HavePendingMessage(window)) {
+        if (!fnGUI_GetMessage(&message, window)) break;
+        if (native_is_key_message(message.message)) continue;
+        fnGUI_TranslateMessage(&message);
+        fnGUI_DispatchMessage(&message);
+    }
+    if (((*hardware_byte(0x00040287u) & 0x10u) ||
+         !(c6502_s_pump_batches & 31u)) &&
+        !fnGUI_HavePendingMessage(window)) {
+        /* HavePendingMessage doesn't run MiniGUI's IAL collection. Enter
+           it only for a latched pen IRQ; host timer #2 bounds a spurious
+           pending factor. A periodic idle collection also handles a factor
+           already acknowledged by the firmware IRQ handler. No raw mouse
+           sampling or guest Timer injection. */
+        ++c6502_s_touch_waits;
+        if (fnGUI_GetMessage(&message, window) &&
+            !native_is_key_message(message.message)) {
+            fnGUI_TranslateMessage(&message);
+            fnGUI_DispatchMessage(&message);
+        }
+    }
+    c6502_s_pumping = 0u;
+}
+#endif
+
 static void native_capture_keys(void)
 {
     c6502_u8 current[8];
@@ -1155,6 +1252,14 @@ static void native_capture_keys(void)
     if (c6502_key_initialized &&
         *hardware_byte(C6502_CTM_DIVIDER_ADDRESS) == (c6502_u8)c6502_key_scan_tick) return;
     now = native_clock();
+#ifdef C6502_TARGET_9288S
+    native_s_pump();
+    now = native_clock(); /* Pumped edges may have advanced the scan clock. */
+    native_s_matrix(current, *hardware_byte(C6502_K5_DATA_ADDRESS),
+                    *hardware_byte(C6502_PORT0_DATA_ADDRESS));
+    native_key_snapshot(current, now);
+    return;
+#endif
     saved_psr = read_psr();
 
     /* The matrix registers are shared with the firmware ISR.  Mask IRQs
@@ -1549,7 +1654,7 @@ static void native_lcd_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
     }
     /* Hidden x=159 is masked only AFTER storing the exact guest RAM. */
     if (c6502_output_ready) {
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
         if (last == 19u) row[count - 1u] &= 0xfeu;
         native_t_write_span(first, last, y, row);
         c6502_perf.mapped_lcd_bytes += count;
@@ -3517,7 +3622,11 @@ void c6502_native_perf_end(void)
 {
     FS_FILE *file;
     int log_ok;
-#ifdef C6502_PROFILE_OTHER
+#if defined(C6502_TARGET_9288S) && defined(C6502_PROFILE_OTHER)
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=S-SOFTKEY-1\nclock_hz=256\n";
+#elif defined(C6502_TARGET_9288S)
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=S-SOFTKEY-1\nclock_hz=256\n";
+#elif defined(C6502_PROFILE_OTHER)
 #ifdef C6502_TARGET_9288T
     static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-SCALE-1\nclock_hz=256\n";
 #else
@@ -3562,7 +3671,7 @@ void c6502_native_perf_end(void)
     NATIVE_LOG(presents); NATIVE_LOG(present_ticks);
     NATIVE_LOG(submissions); NATIVE_LOG(dirty_rows);
     NATIVE_LOG(mapped_lcd_bytes); NATIVE_LOG(framebuffer_bytes); NATIVE_LOG(repair_checks);
-#ifdef C6502_TARGET_9288T
+#ifdef C6502_HOST_PACKED_1X
     native_log_value(file, "display_scale_numerator", C6502_HOST_SCALE_NUMERATOR);
     native_log_value(file, "display_scale_denominator", C6502_HOST_SCALE_DENOMINATOR);
     native_log_value(file, "display_x", C6502_HOST_VIEW_X);
@@ -3570,6 +3679,16 @@ void c6502_native_perf_end(void)
     native_log_value(file, "framebuffer_shadow_bytes", sizeof(c6502_t_frame_shadow));
     NATIVE_LOG(framebuffer_audit_words); NATIVE_LOG(framebuffer_repaired_words);
     NATIVE_LOG(t_packed_groups);
+#endif
+#ifdef C6502_TARGET_9288S
+    native_log_value(file, "touch_events", c6502_s_touch_events);
+    native_log_value(file, "touch_presses", c6502_s_touch_presses);
+    native_log_value(file, "touch_pump_batches", c6502_s_pump_batches);
+    native_log_value(file, "touch_pending_waits", c6502_s_touch_waits);
+    native_log_value(file, "touch_last_message", c6502_s_last_pointer_message);
+    native_log_value(file, "touch_last_position", c6502_s_last_pointer_position);
+    native_log_value(file, "touch_last_down", c6502_s_last_pointer_down);
+    native_log_value(file, "soft_keyboard_y", C6502_S_KEYBOARD_Y);
 #endif
     NATIVE_LOG(lcd_span_rows); NATIVE_LOG(lcd_span_bytes);
     NATIVE_LOG(picture_direct_bytes); NATIVE_LOG(picture_staged_bytes); NATIVE_LOG(picture_ordered_calls);

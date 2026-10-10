@@ -1,5 +1,6 @@
 """Public-runtime regressions: action bounce, teardown keys, log rotation."""
 
+import re
 import shutil
 import subprocess
 
@@ -163,6 +164,9 @@ int main(void){
 
 def test_exit_order_and_launcher_filter_are_kept():
     app = (DATA / "runtime/c6502_native_9288.c").read_text(encoding="utf-8")
+    # S alone needs a bounded touch collector, not a guest game timer.
+    # Keep the original 9288/T private-polling lifecycle assertions.
+    app = re.sub(r"#ifdef C6502_TARGET_9288S\n.*?#endif\n", "", app, flags=re.S)
     exit_path = app.split("c6502_native_enter(c6502_entry_regs);", 1)[1]
     assert "fnGUI_SetTimer" not in app.split("c6502_native_enter(c6502_entry_regs);", 1)[0]
     assert exit_path.index("fnGUI_SetTimer") < exit_path.index("c6502_native_finish_input();")

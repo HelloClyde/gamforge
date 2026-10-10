@@ -6,6 +6,7 @@
 
 ```powershell
 python scripts/build_full_bundle.py --sdk "9288 SDK路径" --sdk9288t "9288T SDK路径" `
+  --sdk9288s "9288S SDK路径" `
   --toolchain "工具链路径" `
   --rom8 "固件目录/8.BIN" --rome "固件目录/E.BIN" `
   --vc-runtime "Visual Studio/VC/Redist/MSVC/版本/x64/Microsoft.VC142.CRT" `
@@ -59,9 +60,13 @@ tag 版本必须与两处元数据完全一致。tag build 再次测试并构建
 - `toolchain/` 随包提供构建说明和 ABI 补丁，但不包含 LLVM 二进制或 SDK。
 - 用户的 9288 SDK、ROM 和 LLVM 工具链需自行配置；当前没有把这些外部依赖称为“全内置”。
 
-以上依赖排除规则适用于轻量包；获授权的全套包按前述流程附带两种 SDK 头文件、
+以上依赖排除规则适用于轻量包；获授权的全套包按前述流程附带对应 SDK 头文件、
 固件与工具链，并验证 `FULL-BUNDLE.json` 的目标列表、文件清单及隔离环境转换。
 两种包都不得包含游戏、游戏 EXE、RES 或存档。Release 应优先推荐全套版下载。
+
+从 v1.3.0 起，S / 听说王600 用 `--sdk9288s` 附带共用的 `Down_Include`。
+`FULL-BUNDLE.json` 分别列出 `9288s`、`tsw600`；隔离环境分别实际转换，
+600 使用独立 D300 标记和“游戏”分类。S 验证不能标成 600 真机验证。
 
 在 Windows 本地运行 `python scripts/build_windows.py` 可执行同一打包/自检流程。
 生成文件在 `dist/`，不加入 Git。可选工具链 workflow 只需手动触发，不会在每次应用

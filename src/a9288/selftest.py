@@ -8,6 +8,7 @@ from a9288.app_options import encode_app_name, icon_images
 from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler import backend, cfg, frontend, kf2
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
+from a9288.targets import TARGETS, TOUCH_TARGETS, display_geometry
 
 
 def main():
@@ -23,12 +24,15 @@ def main():
     packed = kf2.pack_kf2(b"\0\0", app_name=encode_app_name("测试"))
     assert packed[:4] == b"KF2\0"
     assert struct.unpack_from("<H", kf2.pack_kf2(b"\0\0", target="9288t"), 10)[0] == 0x0208
+    for target in TOUCH_TARGETS:
+        assert icon_images(target=target)[0].size == (32, 32)
+        assert display_geometry(target) == (159, 96, 0, 12)
     print(
         json.dumps(
             {
                 "self_test": "PASS",
                 "version": __version__,
-                "targets": ["9288", "9288t"],
+                "targets": list(TARGETS),
                 "synthetic_blocks": len(records),
                 "boot_helper": bundled_helper().is_file(),
                 "dependencies": {

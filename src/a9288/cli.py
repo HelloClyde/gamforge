@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PC-recompile a C6502 GAM into a standalone native 9288 KF2, no interpreter."""
+"""PC-recompile C6502 GAM into native 9288/T KF2 or 9288S/TSW600 D300 EXE."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from a9288.app_options import compiler_lock, default_app_name, encode_app_name, 
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.paths import DEPENDENCIES, WORK, child_environment, task_command
 from a9288.resources import pack_resources
+from a9288.targets import TARGETS, TOUCH_TARGETS
 
 DEFAULT_SDK = Path(os.environ.get("A9288_SDK", DEPENDENCIES / "sdk9288"))
 DEFAULT_TOOLCHAIN = Path(os.environ.get("A9288_TOOLCHAIN", DEPENDENCIES / "toolchain"))
@@ -47,6 +48,11 @@ def convert(args) -> None:
     if target == "9288t":
         print(
             "提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。",
+            flush=True,
+        )
+    elif target in TOUCH_TARGETS:
+        print(
+            f"提示：{profile.name} 输出 D300 EXE，上屏点对点、下屏软键盘，仍需真机验证。",
             flush=True,
         )
     game = args.game.resolve()
@@ -101,13 +107,20 @@ def convert(args) -> None:
     report = json.loads((work / "c6502-s1c33-direct/report.json").read_text(encoding="utf-8"))
     report.update(
         {
-            "format": "c6502-direct-s1c33-kf2-v1",
+            "format": f"c6502-direct-s1c33-{profile.executable_format.lower()}-v1",
+            "executable_format": profile.executable_format,
+            "output_exe": str(output),
+            "output_exe_bytes": size,
+            "output_exe_sha256": digest,
             "output_kf2": str(output),
             "output_kf2_bytes": size,
             "output_kf2_sha256": digest,
             "app_name": name,
             "app_name_encoding": "gbk",
-            "app_category": "entertainment",
+            "app_category": "game" if target == "tsw600" else "entertainment",
+            "app_category_label": profile.category,
+            "d300_compatibility_magic": profile.d300_magic if target in TOUCH_TARGETS else None,
+            "runtime_platform": "9288s" if target in TOUCH_TARGETS else target,
             "icon_source": str(args.icon.resolve()) if args.icon else "bundled-default",
             "standalone_link_complete": True,
             "standalone_game_resources": not external,
@@ -117,7 +130,7 @@ def convert(args) -> None:
             "runtime_guest_cycle_scheduler": False,
             "runtime_interpreter_fallback": False,
             "bridge_contract": "explicit-native-case-required",
-            "host_sdk_abi": f"{target}-gnu33-r6-r9-return-r4-reserved-r15",
+            "host_sdk_abi": f"{'9288s' if target in TOUCH_TARGETS else target}-gnu33-r6-r9-return-r4-reserved-r15",
             "profile_other": bool(getattr(args, "profile_other", False)),
             "output_elf": str(output.with_suffix(".elf")),
             "output_map": str(output.with_suffix(".map")),
@@ -131,7 +144,8 @@ def convert(args) -> None:
             "display_height": view_height,
             "display_x": view_x,
             "display_y": view_y,
-            "target_experimental": target == "9288t",
+            "target_experimental": target != "9288",
+            "soft_keyboard": target in TOUCH_TARGETS,
         }
     )
     if external:
@@ -164,14 +178,14 @@ def convert(args) -> None:
         publish_file(
             staged.with_suffix(".profile-symbols.json"), output.with_suffix(".profile-symbols.json")
         )
-    print(f"KF2: {output} ({size} bytes)\nSHA256: {digest}", flush=True)
+    print(f"{profile.executable_format}: {output} ({size} bytes)\nSHA256: {digest}", flush=True)
     print(f"report: {output.with_suffix('.report.json')}", flush=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path, help="input .gam file")
-    parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
+    parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
     parser.add_argument(
         "--display-scale",
         choices=("1x", "1.5x", "2x"),
@@ -198,6 +212,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.target == "9288t" and args.sdk == DEFAULT_SDK:
         args.sdk = Path(os.environ.get("A9288T_SDK", DEPENDENCIES / "sdk9288t"))
+    elif args.target == "9288s" and args.sdk == DEFAULT_SDK:
+        args.sdk = Path(os.environ.get("A9288S_SDK", DEPENDENCIES / "sdk9288s"))
+    elif args.target == "tsw600" and args.sdk == DEFAULT_SDK:
+        args.sdk = Path(
+            os.environ.get("ATSW600_SDK", os.environ.get("A9288S_SDK", DEPENDENCIES / "sdk9288s"))
+        )
     try:
         with compiler_lock(WORK / "native-compiler.lock"):
             convert(args)

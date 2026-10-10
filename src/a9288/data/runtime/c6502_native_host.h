@@ -3,7 +3,20 @@
 
 /* KF2 load address, S1C33 GNU33 ABI and framebuffer base are shared.
  * The screen and late game-GUI table layout are not. */
-#ifdef C6502_TARGET_9288T
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288S)
+#define C6502_HOST_PACKED_1X 1
+#endif
+#ifdef C6502_TARGET_9288S
+#define C6502_HOST_WIDTH 160u
+#define C6502_HOST_HEIGHT 240u
+#define C6502_HOST_STRIDE 40u
+#define C6502_HOST_VIEW_X 0u
+#define C6502_HOST_VIEW_Y 12u
+#define C6502_HOST_SCALE_NUMERATOR 1u
+#define C6502_HOST_SCALE_DENOMINATOR 1u
+/* S SDK game GUI entries already match its relocation table. */
+#define C6502_HOST_GUI_GAME_OFFSET 0u
+#elif defined(C6502_TARGET_9288T)
 #define C6502_HOST_WIDTH 240u
 #define C6502_HOST_HEIGHT 160u
 #define C6502_HOST_STRIDE 60u

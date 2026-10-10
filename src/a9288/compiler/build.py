@@ -17,7 +17,7 @@ from a9288.compiler.fast_helpers import fast_helper
 from a9288.compiler.s1c33_compat import preserve_comparison_flags
 from a9288.paths import DATA, WORK, child_environment, task_command
 from a9288.resources import HEADER, c_resource_config, pack_resources
-from a9288.targets import display_scale, target_profile
+from a9288.targets import TARGETS, TOUCH_TARGETS, display_scale, target_profile
 
 
 def runtime_supported_bridges() -> tuple[str, ...]:
@@ -394,7 +394,7 @@ def generate_bridges(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
-    parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
+    parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
     parser.add_argument("--display-scale", choices=("1x", "1.5x", "2x"))
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
@@ -505,6 +505,8 @@ def main() -> None:
         flags.append("-DC6502_TARGET_9288T=1")
         if scale == "1.5x":
             flags.append("-DC6502_T_SCALE_1_5=1")
+    elif args.target in TOUCH_TARGETS:
+        flags.append("-DC6502_TARGET_9288S=1")
     if args.profile_other:
         flags.append("-DC6502_PROFILE_OTHER=1")
     for source in (
@@ -553,8 +555,13 @@ def main() -> None:
     expected = payload_end - build_9288.APP_LOAD_ADDRESS
     if len(payload) != expected:
         raise SystemExit(f"payload size mismatch: {len(payload)} != {expected}")
-    print("[GAM9288_STAGE] pack|生成名称、图标与 KF2 EXE", flush=True)
-    app = build_9288.pack_kf2(payload, app_name=name_bytes, icon_root=icons, target=args.target)
+    print(f"[GAM9288_STAGE] pack|生成名称、图标与 {profile.executable_format} EXE", flush=True)
+    if profile.executable_format == "D300":
+        from a9288.compiler.d300 import pack_d300
+
+        app = pack_d300(payload, app_name=name_bytes, icon_root=icons, target=args.target)
+    else:
+        app = build_9288.pack_kf2(payload, app_name=name_bytes, icon_root=icons, target=args.target)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(app)
     if resource is not None:
@@ -583,7 +590,7 @@ def main() -> None:
             ),
             encoding="utf-8",
         )
-    print(f"KF2: {args.output.resolve()} ({len(app)} bytes)")
+    print(f"{profile.executable_format}: {args.output.resolve()} ({len(app)} bytes)")
     print(f"SHA256: {digest}")
     print(f"guest external bridge symbols: {len(external)}")
 

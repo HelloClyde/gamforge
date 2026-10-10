@@ -11,6 +11,10 @@ class Target:
     scale: str
     sdk_directory: str
     module: int
+    executable_format: str = "KF2"
+    icon_size: int = 40
+    d300_magic: int = 0x12345678
+    category: str = "娱乐"
 
 
 TARGETS = {
@@ -18,9 +22,24 @@ TARGETS = {
     # Match the program class used by the supported 9288T firmware launcher.
     # Plain SDK category 8 is insufficient for its system/program entry lookup.
     "9288t": Target("9288T", 240, 160, "1x", "include", 0x0208),
+    # The S is a distinct D300/touchscreen platform, not a resized KF2 host.
+    "9288s": Target("9288S", 160, 240, "1x", "Down_Include", 0, "D300", 32),
+    "tsw600": Target(
+        "听说王600",
+        160,
+        240,
+        "1x",
+        "Down_Include",
+        0,
+        "D300",
+        32,
+        d300_magic=0x0000D500,
+        category="游戏",
+    ),
 }
 
-DISPLAY_SCALES = {"9288": ("2x",), "9288t": ("1x", "1.5x")}
+TOUCH_TARGETS = ("9288s", "tsw600")
+DISPLAY_SCALES = {"9288": ("2x",), "9288t": ("1x", "1.5x"), **{t: ("1x",) for t in TOUCH_TARGETS}}
 
 
 def target_profile(name: str) -> Target:
@@ -42,4 +61,7 @@ def display_scale(target: str, requested: str | None = None) -> str:
 def display_geometry(target: str, requested: str | None = None) -> tuple[int, int, int, int]:
     """Visible width, height and left/top margins; the hidden 160th bit is white."""
     scale = display_scale(target, requested)
+    if target.lower() in TOUCH_TARGETS:
+        # Centre in the upper 120 lines, reserving the lower 120 for keys.
+        return 159, 96, 0, 12
     return {"1x": (159, 96, 40, 32), "1.5x": (239, 144, 0, 8), "2x": (318, 192, 1, 24)}[scale]

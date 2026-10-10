@@ -30,7 +30,14 @@ from a9288.paths import (
     dependency_setting,
     task_command,
 )
-from a9288.targets import DISPLAY_SCALES, TARGETS, display_geometry, display_scale, target_profile
+from a9288.targets import (
+    DISPLAY_SCALES,
+    TARGETS,
+    TOUCH_TARGETS,
+    display_geometry,
+    display_scale,
+    target_profile,
+)
 
 SETTINGS = USER_DATA / "settings.json"
 BG = "#f3f6fb"
@@ -230,6 +237,18 @@ class ConverterApp:
                 settings.get("sdk9288t"),
                 Path(os.environ.get("A9288T_SDK", DEPENDENCIES / "sdk9288t")),
             ),
+            "9288s": dependency_setting(
+                settings.get("sdk9288s"),
+                Path(os.environ.get("A9288S_SDK", DEPENDENCIES / "sdk9288s")),
+            ),
+            "tsw600": dependency_setting(
+                settings.get("sdktsw600", settings.get("sdk9288s")),
+                Path(
+                    os.environ.get(
+                        "ATSW600_SDK", os.environ.get("A9288S_SDK", DEPENDENCIES / "sdk9288s")
+                    )
+                ),
+            ),
         }
         self.current_target = self.target.get()
         self.sdk.set(self.sdk_paths[self.current_target])
@@ -237,6 +256,8 @@ class ConverterApp:
         self.display_scales = {
             "9288": "2x",
             "9288t": saved_scale if saved_scale in DISPLAY_SCALES["9288t"] else "1x",
+            "9288s": "1x",
+            "tsw600": "1x",
         }
         self.display_scale = tk.StringVar(value=self.display_scales[self.current_target])
         self.toolchain = tk.StringVar(
@@ -322,9 +343,9 @@ class ConverterApp:
         head = tk.Frame(shell, bg=BG)
         head.pack(fill="x", pady=(0, 18))
         self.label(head, "GAMForge", 23, bold=True).pack(side="left")
-        self.label(head, "A 系列 GAM  →  BBK 9288 / 9288T 原生程序", 10, color=MUTED).pack(
-            side="right", pady=9
-        )
+        self.label(
+            head, "A 系列 GAM → BBK 9288 / T / S / 听说王600 原生程序", 10, color=MUTED
+        ).pack(side="right", pady=9)
         content = tk.Frame(shell, bg=BG)
         content.pack(fill="x")
         content.columnconfigure(0, weight=1)
@@ -365,7 +386,12 @@ class ConverterApp:
         entry.grid(row=7, column=0, columnspan=2, sticky="ew")
         self.inputs.append(entry)
         self.label(
-            left, "桌面名称取 EXE 文件名；分类为「娱乐」。附带报告、ELF、MAP。", 9, color=MUTED
+            left,
+            "桌面名称取 EXE 文件名；附带报告、ELF、MAP。\n"
+            "9288/T/S 分类为「娱乐」，听说王600 为「游戏」。",
+            9,
+            color=MUTED,
+            justify="left",
         ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(7, 0))
         mode = ttk.Checkbutton(
             left, text="EXE＋外置资源文件（大游戏，按需缓存）", variable=self.external_resources
@@ -383,9 +409,7 @@ class ConverterApp:
             state="readonly",
             width=12,
         )
-        target.bind(
-            "<<ComboboxSelected>>", lambda _: self.target.set(self.target_display.get().lower())
-        )
+        target.bind("<<ComboboxSelected>>", lambda _: self._select_target())
         target.grid(row=11, column=1, sticky="e", pady=(12, 0))
         self.inputs.append(target)
         self.label(left, "画面缩放", 10, bold=True).grid(row=12, column=0, sticky="w", pady=(9, 0))
@@ -596,6 +620,11 @@ class ConverterApp:
         self.icon_path = None
         self._preview()
 
+    def _select_target(self):
+        """Display labels may be Chinese; never use them as CLI target IDs."""
+        label = self.target_display.get()
+        self.target.set(next(key for key, profile in TARGETS.items() if profile.name == label))
+
     def _target_changed(self):
         self.sdk_paths[self.current_target] = self.sdk.get()
         self.display_scales[self.current_target] = self.display_scale.get()
@@ -619,7 +648,8 @@ class ConverterApp:
         self.target_hint.configure(
             text=f"{profile.width} × {profile.height} · {width} × {height} · {scale}"
             + (" 点对点居中" if scale == "1x" else " 最近邻放大")
-            + (" · 真机待验证" if profile.name == "9288T" else "")
+            + (" · 上屏游戏 / 下屏软键盘" if target in TOUCH_TARGETS else "")
+            + (" · 真机待验证" if target != "9288" else "")
         )
 
     def _preview(self):
@@ -631,7 +661,11 @@ class ConverterApp:
         self.small.configure(image=self.small_photo)
         self.icon_label.configure(text=self.icon_path.name if self.icon_path else "使用默认图标")
         self.icon_hint.configure(
-            text="40 × 40 / 16 × 16\n四灰阶 · "
+            text=(
+                "32 × 32 双帧\n四灰阶 · "
+                if target in TOUCH_TARGETS
+                else "40 × 40 / 16 × 16\n四灰阶 · "
+            )
             + ("保留系统边框" if target_profile(target).name == "9288" else "不加白框背景")
         )
 
@@ -719,6 +753,12 @@ class ConverterApp:
                         sdk9288t=self.sdk.get()
                         if self.target.get() == "9288t"
                         else self.sdk_paths["9288t"],
+                        sdk9288s=self.sdk.get()
+                        if self.target.get() == "9288s"
+                        else self.sdk_paths["9288s"],
+                        sdktsw600=self.sdk.get()
+                        if self.target.get() == "tsw600"
+                        else self.sdk_paths["tsw600"],
                         target=self.target.get(),
                         display_scale9288t=self.display_scale.get()
                         if self.target.get() == "9288t"
