@@ -30,7 +30,7 @@ from a9288.paths import (
     dependency_setting,
     task_command,
 )
-from a9288.targets import TARGETS, target_profile
+from a9288.targets import DISPLAY_SCALES, TARGETS, display_geometry, display_scale, target_profile
 
 SETTINGS = USER_DATA / "settings.json"
 BG = "#f3f6fb"
@@ -56,6 +56,7 @@ class Conversion:
     rome: Path = DEFAULT_ROME
     external_resources: bool = False
     target: str = "9288"
+    display_scale: str | None = None
 
     def validate(self):
         inspect_game(self.game)
@@ -65,6 +66,7 @@ class Conversion:
         if self.output.resolve() == self.game.resolve():
             raise ValueError("不能覆盖原始 GAM。")
         profile = target_profile(self.target)
+        display_scale(self.target, self.display_scale)
         if not (self.sdk / profile.sdk_directory).is_dir():
             raise ValueError(
                 f"找不到 {profile.name} SDK 的 {profile.sdk_directory}，请在「编译环境」中配置。"
@@ -88,6 +90,8 @@ class Conversion:
             str(self.game),
             "--target",
             self.target.lower(),
+            "--display-scale",
+            display_scale(self.target, self.display_scale),
             "--app-name",
             self.name,
             "--output",
@@ -229,6 +233,12 @@ class ConverterApp:
         }
         self.current_target = self.target.get()
         self.sdk.set(self.sdk_paths[self.current_target])
+        saved_scale = settings.get("display_scale9288t", "1x")
+        self.display_scales = {
+            "9288": "2x",
+            "9288t": saved_scale if saved_scale in DISPLAY_SCALES["9288t"] else "1x",
+        }
+        self.display_scale = tk.StringVar(value=self.display_scales[self.current_target])
         self.toolchain = tk.StringVar(
             value=dependency_setting(settings.get("toolchain"), DEFAULT_TOOLCHAIN)
         )
@@ -241,6 +251,7 @@ class ConverterApp:
         self._style()
         self._layout()
         self.target.trace_add("write", lambda *_: self._target_changed())
+        self.display_scale.trace_add("write", lambda *_: self._scale_changed())
         self._preview()
         self.name.trace_add("write", lambda *_: self._name_changed())
         self.output.trace_add("write", lambda *_: self._output_changed())
@@ -377,13 +388,17 @@ class ConverterApp:
         )
         target.grid(row=11, column=1, sticky="e", pady=(12, 0))
         self.inputs.append(target)
-        self.target_hint = self.label(left, "", 9, color=MUTED)
-        self.target_hint.grid(row=12, column=0, columnspan=2, sticky="w", pady=(5, 0))
-        profile = target_profile(self.target.get())
-        self.target_hint.configure(
-            text=f"{profile.width} × {profile.height} · 游戏画面 {profile.scale}"
-            + (" · 模拟器启动已验证，真机待验证" if profile.name == "9288T" else "")
+        self.label(left, "画面缩放", 10, bold=True).grid(row=12, column=0, sticky="w", pady=(9, 0))
+        self.scale_combo = ttk.Combobox(
+            left, textvariable=self.display_scale,
+            values=DISPLAY_SCALES[self.target.get()],
+            state="readonly" if self.target.get() == "9288t" else "disabled", width=12,
         )
+        self.scale_combo.grid(row=12, column=1, sticky="e", pady=(9, 0))
+        self.inputs.append(self.scale_combo)
+        self.target_hint = self.label(left, "", 9, color=MUTED)
+        self.target_hint.grid(row=13, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self._scale_changed()
         right = self.card(content)
         right.grid(row=0, column=1, sticky="nsew")
         right.configure(width=285)
@@ -581,15 +596,29 @@ class ConverterApp:
 
     def _target_changed(self):
         self.sdk_paths[self.current_target] = self.sdk.get()
+        self.display_scales[self.current_target] = self.display_scale.get()
         self.current_target = self.target.get()
         self.sdk.set(self.sdk_paths[self.current_target])
         profile = target_profile(self.current_target)
         self.target_display.set(profile.name)
-        self.target_hint.configure(
-            text=f"{profile.width} × {profile.height} · 游戏画面 {profile.scale}"
-            + (" · 模拟器启动已验证，真机待验证" if profile.name == "9288T" else "")
+        self.scale_combo.configure(
+            values=DISPLAY_SCALES[self.current_target],
+            state="readonly" if self.current_target == "9288t" else "disabled",
         )
+        self.display_scale.set(self.display_scales[self.current_target])
+        self._scale_changed()
         self._preview()
+
+    def _scale_changed(self):
+        target = self.target.get()
+        profile = target_profile(target)
+        scale = display_scale(target, self.display_scale.get())
+        width, height, _, _ = display_geometry(target, scale)
+        self.target_hint.configure(
+            text=f"{profile.width} × {profile.height} · {width} × {height} · {scale}"
+            + (" 点对点居中" if scale == "1x" else " 最近邻放大")
+            + (" · 真机待验证" if profile.name == "9288T" else "")
+        )
 
     def _preview(self):
         target = self.target.get()
@@ -665,6 +694,7 @@ class ConverterApp:
                 Path(self.rome.get()).resolve(),
                 external_resources=self.external_resources.get(),
                 target=self.target.get(),
+                display_scale=self.display_scale.get(),
             )
             config.validate()
         except Exception as exc:
@@ -688,6 +718,9 @@ class ConverterApp:
                         if self.target.get() == "9288t"
                         else self.sdk_paths["9288t"],
                         target=self.target.get(),
+                        display_scale9288t=self.display_scale.get()
+                        if self.target.get() == "9288t"
+                        else self.display_scales["9288t"],
                         toolchain=self.toolchain.get(),
                         rom8=self.rom8.get(),
                         rome=self.rome.get(),

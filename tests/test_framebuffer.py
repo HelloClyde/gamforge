@@ -26,8 +26,8 @@ def test_compiled_lcd_stores_cannot_bypass_mirror(tmp_path):
     assert "    ld.w %r11, [%sp+0]\n    add %sp, 4\n    ret" in writes
 
 
-@pytest.mark.parametrize("target", ["9288", "9288t"])
-def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, target):
+@pytest.mark.parametrize("target,scale", [("9288", "2x"), ("9288t", "1x"), ("9288t", "1.5x")])
+def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, target, scale):
     cc = shutil.which("gcc")
     if not cc:
         pytest.skip("host gcc is not installed")
@@ -53,17 +53,28 @@ def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, 
 typedef unsigned char c6502_u8;typedef unsigned short c6502_u16;typedef unsigned c6502_u32;
 #define C6502_RAM_SIZE 32768u
 #define C6502_GAME_PHYSICAL_BASE 0x20d000u
-#define C6502_VIEW_Y 24u
+#define C6502_VIEW_Y C6502_HOST_VIEW_Y
 #define C6502_GUEST_STRIDE 20u
 #define C6502_GUEST_HEIGHT 96u
-#define C6502_FRAME_STRIDE 80u
-#define C6502_FRAME_HEIGHT 240u
-#define C6502_HOST_FRAME_BYTES (C6502_FRAME_STRIDE*C6502_FRAME_HEIGHT)
+#define C6502_FRAME_STRIDE C6502_HOST_STRIDE
+#define C6502_FRAME_HEIGHT C6502_HOST_HEIGHT
+#ifdef C6502_TARGET_9288T
+#ifdef C6502_T_SCALE_1_5
+#define FULL_FRAME_WRITE_BYTES 8640
+#define TILE_WRITE_BYTES 144
+#else
+#define FULL_FRAME_WRITE_BYTES 3840
+#define TILE_WRITE_BYTES 64
+#endif
+#else
+#define FULL_FRAME_WRITE_BYTES 15360
+#define TILE_WRITE_BYTES 288
+#endif
 #define C6502_FRAME_TICKS 64u
 #define C6502_RESOURCE_SCRATCH_SIZE 1920u
 static unsigned char ram[32768],game[12288],c6502_resource_scratch[1920];
-static unsigned char host_frame[19200] __attribute__((aligned(4)));
-static unsigned char expected[19200],before[19200];
+static unsigned char host_frame[C6502_HOST_FRAME_BYTES] __attribute__((aligned(4)));
+static unsigned char expected[C6502_HOST_FRAME_BYTES],before[C6502_HOST_FRAME_BYTES];
 #ifdef C6502_TARGET_9288T
 static unsigned char c6502_t_frame_shadow[9600] __attribute__((aligned(4)));
 #endif
@@ -90,8 +101,17 @@ static void reference(void){
  memset(expected,255,sizeof(expected));
  for(unsigned y=0;y<96;++y)for(unsigned x=0;x<159;++x){
   unsigned bit=ram[lcd_address(x/8,y)]&(128>>(x%8));
+#ifdef C6502_TARGET_9288T
+#ifdef C6502_T_SCALE_1_5
+  if(bit)for(unsigned yy=8+(y*3+1)/2;yy<8+((y+1)*3+1)/2;++yy)
+   for(unsigned xx=(x*3+1)/2;xx<((x+1)*3+1)/2;++xx)
+#else
+  if(bit)for(unsigned yy=32+y;yy<33+y;++yy)for(unsigned xx=40+x;xx<41+x;++xx)
+#endif
+#else
   if(bit)for(unsigned yy=24+y*2;yy<26+y*2;++yy)for(unsigned xx=1+x*2;xx<3+x*2;++xx)
-   expected[yy*80+xx/4]&=~(3<<(6-2*(xx%4)));
+#endif
+   expected[yy*C6502_FRAME_STRIDE+xx/4]&=~(3<<(6-2*(xx%4)));
  }
  assert(!memcmp(host_frame,expected,sizeof(expected)));
 }
@@ -178,7 +198,7 @@ static void differential_pictures(void){
  unsigned rows=c6502_perf.lcd_span_rows,ordered=c6502_perf.picture_ordered_calls;
  native_picture(0,0,158,95,0x4800,0);
  assert(!memcmp(ram,oracle,sizeof(ram)));reference();
- assert(c6502_perf.mapped_lcd_bytes-stores==1920&&c6502_perf.framebuffer_bytes-bytes==15360);
+ assert(c6502_perf.mapped_lcd_bytes-stores==1920&&c6502_perf.framebuffer_bytes-bytes==FULL_FRAME_WRITE_BYTES);
  assert(c6502_perf.lcd_span_rows-rows==96&&c6502_perf.picture_ordered_calls==ordered);
 }
 int main(void){
@@ -227,7 +247,7 @@ int main(void){
  unsigned stores=c6502_perf.mapped_lcd_bytes,bytes=c6502_perf.framebuffer_bytes;
  native_picture(16,8,31,23,0x3000,0);reference();
  assert(c6502_perf.mapped_lcd_bytes-stores==32);
- assert(c6502_perf.framebuffer_bytes-bytes==288 && c6502_perf.presents==presents);
+ assert(c6502_perf.framebuffer_bytes-bytes==TILE_WRITE_BYTES && c6502_perf.presents==presents);
  assert(c6502_perf.lcd_span_rows==16 && c6502_perf.picture_direct_bytes==32);
  /* Masked/unaligned pictures, reverse coordinates, both firmware flags. */
  for(unsigned flag=0;flag<2;++flag)for(unsigned y=0;y<96;y+=5){
@@ -242,7 +262,7 @@ int main(void){
  for(unsigned i=0;i<8;++i){
   memset(ram+0x3000,31*i,1920);bytes=c6502_perf.framebuffer_bytes;
   native_picture(0,0,158,95,0x3000,0);reference();
-  assert(c6502_perf.framebuffer_bytes-bytes==15360); /* formerly 19008 */
+  assert(c6502_perf.framebuffer_bytes-bytes==FULL_FRAME_WRITE_BYTES);
  }
  for(unsigned op=0;op<3;++op){horizontal_span(3,154,65,op);reference();}
  line(10,10,37,63);reference();rectangle(0,0,158,95,0);reference();rectangle_clear(0,0,158,95);reference();
@@ -253,7 +273,7 @@ int main(void){
  save_restore_screen(r,1);reference();assert(!memcmp(before,host_frame,sizeof(before)));
  assert(c6502_perf.presents==presents); /* no frame/timer flush for any drawing */
  /* Silent GUI/DMA corruption: repair compares physical bytes, not only shadow. */
- memset(host_frame+12,0,7);memset(host_frame+80*90+9,255,24);
+ memset(host_frame+12,0,7);memset(host_frame+C6502_FRAME_STRIDE*90+9,255,24);
  clock_value=64;native_refresh_if_due();reference();
  bytes=c6502_perf.framebuffer_bytes;clock_value=128;native_refresh_if_due();
  assert(c6502_perf.framebuffer_bytes==bytes); /* unchanged audit writes nothing */
@@ -266,7 +286,7 @@ int main(void){
  assert(c6502_perf.framebuffer_repaired_words-repaired==1);
  assert(c6502_perf.framebuffer_bytes-bytes==4); /* one corrupted word, not an entire frame */
 #endif
- host_frame[19200-1]=0;c6502_native_invalidate_screen();native_refresh_if_due();reference();
+ host_frame[C6502_HOST_FRAME_BYTES-1]=0;c6502_native_invalidate_screen();native_refresh_if_due();reference();
  differential_pictures();
  puts("DIRECT-FB: all LCD addresses, values, aliases, primitives, animation and repair PASS");
  return 0;
@@ -274,19 +294,12 @@ int main(void){
 """
     )
     if target == "9288t":
-        # Run the same guest-memory oracle against the smaller physical LCD.
         source = "#define C6502_TARGET_9288T 1\n" + source
-        source = source.replace("C6502_VIEW_Y 24u", "C6502_VIEW_Y 8u")
-        source = source.replace("C6502_FRAME_STRIDE 80u", "C6502_FRAME_STRIDE 60u")
-        source = source.replace("C6502_FRAME_HEIGHT 240u", "C6502_FRAME_HEIGHT 160u")
-        source = source.replace("[19200]", "[9600]").replace("[19200-1]", "[9600-1]")
-        source = source.replace(
-            "for(unsigned yy=24+y*2;yy<26+y*2;++yy)for(unsigned xx=1+x*2;xx<3+x*2;++xx)",
-            "for(unsigned yy=8+(y*3+1)/2;yy<8+((y+1)*3+1)/2;++yy)"
-            "for(unsigned xx=(x*3+1)/2;xx<((x+1)*3+1)/2;++xx)",
-        ).replace("expected[yy*80+xx/4]", "expected[yy*60+xx/4]")
-        source = source.replace("==288", "==144").replace("==15360", "==8640")
-        source = source.replace("host_frame+80*90+9", "host_frame+60*90+9")
+    if scale == "1.5x":
+        source = "#define C6502_T_SCALE_1_5 1\n" + source
+    definitions, source = source.split("#include <assert.h>", 1)
+    source = definitions + (DATA / "runtime/c6502_native_host.h").read_text(encoding="utf-8") + \
+        "\n#include <assert.h>" + source
     c = tmp_path / "mirror.c"
     exe = tmp_path / "mirror.exe"
     c.write_text(source, encoding="utf-8")

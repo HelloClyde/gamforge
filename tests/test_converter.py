@@ -227,7 +227,10 @@ class NativeConverterTest(unittest.TestCase):
         result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
         self.assertEqual(result["target"], "9288t")
         self.assertEqual((result["screen_width"], result["screen_height"]), (240, 160))
-        self.assertEqual(result["display_scale"], "1.5x")
+        self.assertEqual(result["display_scale"], "1x")
+        self.assertEqual((result["display_width"], result["display_height"]), (159, 96))
+        self.assertEqual((result["display_x"], result["display_y"]), (40, 32))
+        self.assertEqual(command[command.index("--display-scale") + 1], "1x")
 
     def test_atomic_copy_failure_leaves_destination(self):
         source = self.folder / "source"

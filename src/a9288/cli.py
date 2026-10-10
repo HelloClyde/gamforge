@@ -38,10 +38,12 @@ def publish_file(source: Path, destination: Path) -> None:
 
 
 def convert(args) -> None:
-    from a9288.targets import target_profile
+    from a9288.targets import display_geometry, display_scale, target_profile
 
     target = getattr(args, "target", "9288").lower()
     profile = target_profile(target)
+    scale = display_scale(target, getattr(args, "display_scale", None))
+    view_width, view_height, view_x, view_y = display_geometry(target, scale)
     if target == "9288t":
         print("提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。", flush=True)
     game = args.game.resolve()
@@ -63,6 +65,8 @@ def convert(args) -> None:
         str(game),
         "--target",
         target,
+        "--display-scale",
+        scale,
         "--sdk",
         str(sdk),
         "--toolchain",
@@ -119,7 +123,11 @@ def convert(args) -> None:
             "target_name": profile.name,
             "screen_width": profile.width,
             "screen_height": profile.height,
-            "display_scale": profile.scale,
+            "display_scale": scale,
+            "display_width": view_width,
+            "display_height": view_height,
+            "display_x": view_x,
+            "display_y": view_y,
             "target_experimental": target == "9288t",
         }
     )
@@ -161,6 +169,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path, help="input .gam file")
     parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
+    parser.add_argument("--display-scale", choices=("1x", "1.5x", "2x"),
+                        help="9288T defaults to 1x pixel-perfect; optional 1.5x. 9288 uses 2x.")
     parser.add_argument("--sdk", type=Path, default=DEFAULT_SDK)
     parser.add_argument("--toolchain", type=Path, default=DEFAULT_TOOLCHAIN)
     parser.add_argument("--output", type=Path)

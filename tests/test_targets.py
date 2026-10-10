@@ -12,7 +12,7 @@ from a9288.app_options import icon_images
 from a9288.compiler.kf2 import pack_kf2, prepare_sdk_headers
 from a9288.gui import Conversion, ConverterApp
 from a9288.icons import encode_icon
-from a9288.targets import target_profile
+from a9288.targets import display_geometry, display_scale, target_profile
 
 
 @pytest.mark.parametrize(
@@ -55,6 +55,7 @@ def test_gui_target_forwarded_without_changing_resources(tmp_path):
     )
     command = conversion.command(tmp_path / "work")
     assert command[command.index("--target") + 1] == "9288t"
+    assert command[command.index("--display-scale") + 1] == "1x"
     assert "--external-resources" in command
 
 
@@ -84,6 +85,10 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
         target=tk.StringVar(interpreter, "9288t"),
         target_display=tk.StringVar(interpreter, "9288"),
         target_hint=Mock(),
+        display_scales={"9288": "2x", "9288t": "1x"},
+        display_scale=tk.StringVar(interpreter, "2x"),
+        scale_combo=Mock(),
+        _scale_changed=Mock(),
         icon_path=tmp_path / "my-icon.png",
         _preview=Mock(),
     )
@@ -91,8 +96,87 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
     assert app.sdk_paths["9288"] == "sdk8-custom"
     assert app.sdk.get() == "sdkT"
     assert app.target_display.get() == "9288T"
+    assert app.display_scale.get() == "1x"
     assert app.icon_path == tmp_path / "my-icon.png"
     app._preview.assert_called_once_with()
+
+
+@pytest.mark.parametrize("target,requested,expected,geometry", [
+    ("9288", None, "2x", (318, 192, 1, 24)),
+    ("9288T", None, "1x", (159, 96, 40, 32)),
+    ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
+])
+def test_display_scale_defaults_and_geometry(target, requested, expected, geometry):
+    assert display_scale(target, requested) == expected
+    assert display_geometry(target, requested) == geometry
+
+
+@pytest.mark.parametrize("target,scale", [("9288", "1x"), ("9288t", "2x"), ("9288t", "3x")])
+def test_reject_incompatible_scales(target, scale):
+    with pytest.raises(ValueError, match="不支持画面缩放"):
+        display_scale(target, scale)
+
+
+def test_gui_optional_1_5x_is_forwarded(tmp_path):
+    conversion = Conversion(tmp_path / "g.gam", "游戏", None, tmp_path / "g.exe",
+                            tmp_path / "sdk", tmp_path / "tools",
+                            target="9288t", display_scale="1.5x")
+    command = conversion.command(tmp_path / "work")
+    assert command[command.index("--display-scale") + 1] == "1.5x"
+
+
+def test_gui_remembers_t_scale_across_targets():
+    interpreter = tk.Tcl()
+    app = SimpleNamespace(
+        sdk_paths={"9288": "sdk8", "9288t": "sdkT"}, current_target="9288t",
+        sdk=tk.StringVar(interpreter, "sdkT"), target=tk.StringVar(interpreter, "9288"),
+        target_display=tk.StringVar(interpreter, "9288T"), target_hint=Mock(),
+        display_scales={"9288": "2x", "9288t": "1x"},
+        display_scale=tk.StringVar(interpreter, "1.5x"), scale_combo=Mock(),
+        _scale_changed=Mock(), _preview=Mock(),
+    )
+    ConverterApp._target_changed(app)
+    assert app.display_scale.get() == "2x"
+    assert app.display_scales["9288t"] == "1.5x"
+    app.target.set("9288t")
+    ConverterApp._target_changed(app)
+    assert app.display_scale.get() == "1.5x"
+
+
+def test_gui_pixel_perfect_hint():
+    interpreter = tk.Tcl()
+    app = SimpleNamespace(target=tk.StringVar(interpreter, "9288t"),
+                          display_scale=tk.StringVar(interpreter, "1x"), target_hint=Mock())
+    ConverterApp._scale_changed(app)
+    assert "159 × 96 · 1x 点对点居中" in app.target_hint.configure.call_args.kwargs["text"]
+
+
+def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
+    import a9288.gui as gui
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    root.withdraw()
+    monkeypatch.setattr(gui, "SETTINGS", tmp_path / "settings.json")
+    try:
+        app = ConverterApp(root)
+        assert app.display_scale.get() == "2x"
+        assert str(app.scale_combo.cget("state")) == "disabled"
+        app.target.set("9288t")
+        assert app.display_scale.get() == "1x"
+        assert tuple(app.scale_combo.cget("values")) == ("1x", "1.5x")
+        assert str(app.scale_combo.cget("state")) == "readonly"
+        app.display_scale.set("1.5x")
+        assert "239 × 144" in app.target_hint.cget("text")
+        app.target.set("9288")
+        assert app.display_scale.get() == "2x"
+        app.target.set("9288t")
+        assert app.display_scale.get() == "1.5x"
+        root.update_idletasks()
+    finally:
+        root.destroy()
 
 
 @pytest.mark.parametrize("target", ["9288", "9288t"])

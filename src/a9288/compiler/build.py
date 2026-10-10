@@ -17,7 +17,7 @@ from a9288.compiler.fast_helpers import fast_helper
 from a9288.compiler.s1c33_compat import preserve_comparison_flags
 from a9288.paths import DATA, WORK, child_environment, task_command
 from a9288.resources import HEADER, c_resource_config, pack_resources
-from a9288.targets import target_profile
+from a9288.targets import display_scale, target_profile
 
 
 def runtime_supported_bridges() -> tuple[str, ...]:
@@ -395,6 +395,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
     parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
+    parser.add_argument("--display-scale", choices=("1x", "1.5x", "2x"))
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -414,6 +415,7 @@ def main() -> None:
     app_name = args.app_name if args.app_name is not None else default_app_name(args.game.stem)
     name_bytes = encode_app_name(app_name)
     profile = target_profile(args.target)
+    scale = display_scale(args.target, args.display_scale)
     print(f"[GAM9288_STAGE] prepare|检查 {profile.name} SDK 与工具链", flush=True)
 
     clang = build_9288.find_tool(args.toolchain, "clang")
@@ -501,6 +503,8 @@ def main() -> None:
     objects = [combined]
     if args.target == "9288t":
         flags.append("-DC6502_TARGET_9288T=1")
+        if scale == "1.5x":
+            flags.append("-DC6502_T_SCALE_1_5=1")
     if args.profile_other:
         flags.append("-DC6502_PROFILE_OTHER=1")
     for source in (

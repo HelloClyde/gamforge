@@ -730,6 +730,7 @@ static void rectangle_clear(
 }
 
 #ifdef C6502_TARGET_9288T
+#ifdef C6502_T_SCALE_1_5
 /* Twelve host pixels per guest byte. Each guest pixel occupies 2,1,2,1...
  * pixels, retaining every source pixel on the 240x160 host. */
 static c6502_u32 native_t_expand(c6502_u8 bits)
@@ -825,6 +826,70 @@ static void native_t_write_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
     c6502_perf.t_packed_groups += groups;
     c6502_perf.framebuffer_bytes += count * 3u * rows;
 }
+#else
+/* Eight guest pixels become eight physical 2-bpp pixels, in little-endian
+   byte order. The view starts at x=40 (byte 10), with no resampling. */
+static c6502_u32 native_t_expand(c6502_u8 bits)
+{
+    c6502_u32 pixel_index, word = 0u;
+    for (pixel_index = 0u; pixel_index < 8u; ++pixel_index) {
+        c6502_u32 color = (bits & (128u >> pixel_index)) ? 0u : 3u;
+        word |= color << ((pixel_index >> 2) * 8u + 6u - (pixel_index & 3u) * 2u);
+    }
+    return word;
+}
+
+static inline __attribute__((always_inline)) void native_t_store2(
+    volatile c6502_u8 *out, c6502_u8 *shadow, c6502_u32 word)
+{
+    *(c6502_u16 *)shadow = (c6502_u16)word;
+    *(volatile c6502_u16 *)out = (c6502_u16)word;
+}
+
+static inline __attribute__((always_inline)) c6502_u32 native_t_pack2(
+    const c6502_u8 *source)
+{
+    return c6502_expand_2x[source[0]] | (c6502_expand_2x[source[1]] << 16);
+}
+
+static void native_t_write_byte(c6502_u32 x, c6502_u32 y, c6502_u8 bits)
+{
+    c6502_u32 offset = (C6502_VIEW_Y + y) * C6502_FRAME_STRIDE +
+        C6502_HOST_VIEW_X / 4u + x * 2u;
+    if (x == 19u) bits &= 0xfeu;
+    native_t_store2(C6502_FRAMEBUFFER + offset, c6502_t_frame_shadow + offset,
+        c6502_expand_2x[bits]);
+    c6502_perf.framebuffer_bytes += 2u;
+    c6502_previous_frame[y * 20u + x] = bits;
+}
+
+/* Align after the optional halfword prefix; two guest bytes share one
+   physical word. Never touch another span's pixels or the white margins. */
+static void native_t_write_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
+    const c6502_u8 *source)
+{
+    c6502_u32 count = last - first + 1u, remaining = count, index, groups = 0u;
+    c6502_u32 offset = (C6502_VIEW_Y + y) * C6502_FRAME_STRIDE +
+        C6502_HOST_VIEW_X / 4u + first * 2u;
+    c6502_u8 *previous = c6502_previous_frame + y * 20u + first;
+    volatile c6502_u8 *out = C6502_FRAMEBUFFER + offset;
+    c6502_u8 *shadow = c6502_t_frame_shadow + offset;
+    for (index = 0u; index < count; ++index) previous[index] = source[index];
+    if ((offset & 3u) && remaining) {
+        native_t_store2(out, shadow, c6502_expand_2x[*source++]);
+        out += 2u; shadow += 2u; --remaining;
+    }
+    while (remaining >= 2u) {
+        c6502_u32 word = native_t_pack2(source);
+        *(c6502_u32 *)shadow = word;
+        *(volatile c6502_u32 *)out = word;
+        out += 4u; shadow += 4u; source += 2u; remaining -= 2u; ++groups;
+    }
+    if (remaining) native_t_store2(out, shadow, c6502_expand_2x[*source]);
+    c6502_perf.t_packed_groups += groups;
+    c6502_perf.framebuffer_bytes += count * 2u;
+}
+#endif
 
 /* Catch writes which bypass the normal guest mapping, as well as startup
    and explicit invalidation. Unchanged rows do not regenerate any pixels. */
@@ -844,6 +909,7 @@ static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
         row[19] &= 0xfeu;
         for (x = 0u; x < 20u; ++x) dirty |= row[x] != previous[x];
         if (dirty) {
+#ifdef C6502_T_SCALE_1_5
             c6502_u32 offset = (C6502_VIEW_Y + (y * 3u + 1u) / 2u) * C6502_FRAME_STRIDE;
             c6502_u32 *out = (c6502_u32 *)(c6502_t_frame_shadow + offset);
             for (x = 0u; x < 20u; x += 4u) native_t_pack4(out + x * 3u / 4u, row + x);
@@ -851,6 +917,14 @@ static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
                 c6502_u32 *other = out + C6502_FRAME_STRIDE / 4u;
                 for (x = 0u; x < C6502_FRAME_STRIDE / 4u; ++x) other[x] = out[x];
             }
+#else
+            c6502_u8 *out = c6502_t_frame_shadow +
+                (C6502_VIEW_Y + y) * C6502_FRAME_STRIDE + C6502_HOST_VIEW_X / 4u;
+            *(c6502_u16 *)out = (c6502_u16)c6502_expand_2x[row[0]];
+            for (x = 1u; x < 19u; x += 2u)
+                *(c6502_u32 *)(out + x * 2u) = native_t_pack2(row + x);
+            *(c6502_u16 *)(out + 38u) = (c6502_u16)c6502_expand_2x[row[19]];
+#endif
             for (x = 0u; x < 20u; ++x) previous[x] = row[x];
             ++changed;
         }
@@ -3445,12 +3519,12 @@ void c6502_native_perf_end(void)
     int log_ok;
 #ifdef C6502_PROFILE_OTHER
 #ifdef C6502_TARGET_9288T
-    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-ROW-AUDIT-1\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-SCALE-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=OTHER-PROFILE-1\nclock_hz=256\n";
 #endif
 #elif defined(C6502_TARGET_9288T)
-    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-ROW-AUDIT-1\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-SCALE-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
 #endif
@@ -3489,6 +3563,10 @@ void c6502_native_perf_end(void)
     NATIVE_LOG(submissions); NATIVE_LOG(dirty_rows);
     NATIVE_LOG(mapped_lcd_bytes); NATIVE_LOG(framebuffer_bytes); NATIVE_LOG(repair_checks);
 #ifdef C6502_TARGET_9288T
+    native_log_value(file, "display_scale_numerator", C6502_HOST_SCALE_NUMERATOR);
+    native_log_value(file, "display_scale_denominator", C6502_HOST_SCALE_DENOMINATOR);
+    native_log_value(file, "display_x", C6502_HOST_VIEW_X);
+    native_log_value(file, "display_y", C6502_HOST_VIEW_Y);
     native_log_value(file, "framebuffer_shadow_bytes", sizeof(c6502_t_frame_shadow));
     NATIVE_LOG(framebuffer_audit_words); NATIVE_LOG(framebuffer_repaired_words);
     NATIVE_LOG(t_packed_groups);
