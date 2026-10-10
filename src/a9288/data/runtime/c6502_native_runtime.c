@@ -2,6 +2,7 @@
 #include "CRTL/malloc.h"
 #include "c6502_native_runtime.h"
 #include "c6502_native_bridge_ids.h"
+#include "c6502_native_host.h"
 
 #define C6502_RAM_SIZE 0x8000u
 #ifndef C6502_GAME_SIZE
@@ -9,14 +10,14 @@
 #endif
 #define C6502_BOOT_RAW_SIZE 32832u
 #define C6502_GAME_PHYSICAL_BASE 0x20d000u
-#define C6502_VIEW_Y 24u
+#define C6502_VIEW_Y C6502_HOST_VIEW_Y
 #define C6502_GUEST_STRIDE 20u
 #define C6502_GUEST_HEIGHT 96u
 #define C6502_RESOURCE_SCRATCH_SIZE \
     (C6502_GUEST_STRIDE * C6502_GUEST_HEIGHT)
 #define C6502_FRAMEBUFFER ((volatile c6502_u8 *)0x003c0000u)
-#define C6502_FRAME_STRIDE 80u
-#define C6502_FRAME_HEIGHT 240u
+#define C6502_FRAME_STRIDE C6502_HOST_STRIDE
+#define C6502_FRAME_HEIGHT C6502_HOST_HEIGHT
 #define C6502_FLAG_C 0x01u
 #define C6502_FLAG_Z 0x02u
 #define C6502_FLAG_V 0x40u
@@ -73,14 +74,15 @@ static c6502_u8 c6502_boot_raw[C6502_BOOT_RAW_SIZE]
 #define c6502_ram (c6502_boot_raw + 64u)
 static c6502_u8 c6502_resource_scratch[C6502_RESOURCE_SCRATCH_SIZE]
     __attribute__((section(".noinit"), aligned(4)));
-static c6502_u8 c6502_text_surface[80u * 240u]
+static c6502_u8 c6502_text_surface[C6502_HOST_FRAME_BYTES]
     __attribute__((section(".noinit"), aligned(4)));
-/* 9288 V1.5 has five private entries before the SDK's late game API block.
-   Its drawing surface is 320x240/2-bpp, not the A-series 160x96/1-bpp RAM. */
+/* Stock 9288/9288T firmware has extra private entries before the SDK's
+   late game API block. The host profile carries the verified correction.
+   Its drawing surface is host-sized/2-bpp, not the guest 160x96/1-bpp RAM. */
 #define NATIVE_GAME_GUI(member) \
     (*(__typeof__(tpDL_GUITable->member) *)(void *)( \
         (c6502_u8 *)tpDL_GUITable + \
-        __builtin_offsetof(T_GUI_RelocationTable, member) + 0x14u))
+        __builtin_offsetof(T_GUI_RelocationTable, member) + C6502_HOST_GUI_GAME_OFFSET))
 static c6502_u32 c6502_last_frame_tick;
 static c6502_u32 c6502_timer_clock;
 static c6502_u32 c6502_timer_fraction;
@@ -90,6 +92,14 @@ static c6502_u8 c6502_frame_valid;
 static c6502_u8 c6502_output_ready;
 static c6502_u8 c6502_previous_frame[1920];
 static c6502_u32 c6502_expand_2x[256];
+#ifdef C6502_TARGET_9288T
+/* The exact packed output, NOT a deferred drawing surface. Every mapped
+   write updates this and physical VRAM immediately. Audit compares words
+   against it instead of rescaling 1,920 guest bytes at every input wait.
+   First present overwrites all 9,600 bytes, including the white margins. */
+static c6502_u8 c6502_t_frame_shadow[C6502_HOST_FRAME_BYTES]
+    __attribute__((section(".noinit"), aligned(4)));
+#endif
 typedef struct C6502_Glyph {
     c6502_u16 code;
     c6502_u8 rows[32];
@@ -115,6 +125,8 @@ typedef struct C6502_Perf {
     c6502_u32 timer_coalesced, timer_update_max_gap_ticks, timer_burst_max;
     c6502_u32 timer_key_deferrals, timer_key_yields;
     c6502_u32 timer_backward_rejected, timer_advance_chunks, timer_advance_chunks_max;
+    c6502_u32 framebuffer_audit_words, framebuffer_repaired_words;
+    c6502_u32 t_packed_groups;
 } C6502_Perf;
 static C6502_Perf c6502_perf;
 static c6502_u32 native_clock(void);
@@ -307,11 +319,12 @@ static void put32(c6502_u32 address, c6502_u32 value)
 
 static c6502_u32 guest_get32(c6502_u16 address)
 {
-    c6502_u32 value = 0u;
-    c6502_u32 index;
-    for (index = 0u; index < 4u; ++index)
-        value |= (c6502_u32)guest_read((c6502_u16)(address + index)) <<
-            (index * 8u);
+    /* Four fixed-width reads also avoid a variable-shift loop on S1C33.
+       Keep each read sequenced: low I/O addresses can advance a latch. */
+    c6502_u32 value = guest_read(address);
+    value |= (c6502_u32)guest_read((c6502_u16)(address + 1u)) << 8;
+    value |= (c6502_u32)guest_read((c6502_u16)(address + 2u)) << 16;
+    value |= (c6502_u32)guest_read((c6502_u16)(address + 3u)) << 24;
     return value;
 }
 
@@ -716,6 +729,136 @@ static void rectangle_clear(
     }
 }
 
+#ifdef C6502_TARGET_9288T
+/* Twelve host pixels per guest byte. Each guest pixel occupies 2,1,2,1...
+ * pixels, retaining every source pixel on the 240x160 host. */
+static c6502_u32 native_t_expand(c6502_u8 bits)
+{
+    c6502_u32 pixel_index, position = 0u, word = 0u;
+    for (pixel_index = 0u; pixel_index < 8u; ++pixel_index) {
+        c6502_u32 repeats = (pixel_index & 1u) ? 1u : 2u;
+        c6502_u32 color = (bits & (128u >> pixel_index)) ? 0u : 3u;
+        while (repeats--) {
+            word |= color << ((position >> 2) * 8u + 6u - (position & 3u) * 2u);
+            ++position;
+        }
+    }
+    return word;
+}
+
+/* Constant shifts are important on S1C33: a variable >> (byte * 8) used
+   to compile into another loop inside each three-byte output unit. */
+static inline __attribute__((always_inline)) void native_t_store3(
+    volatile c6502_u8 *out, c6502_u8 *shadow, c6502_u32 word)
+{
+    shadow[0] = (c6502_u8)word;
+    shadow[1] = (c6502_u8)(word >> 8);
+    shadow[2] = (c6502_u8)(word >> 16);
+    out[0] = (c6502_u8)word;
+    out[1] = (c6502_u8)(word >> 8);
+    out[2] = (c6502_u8)(word >> 16);
+}
+
+static inline __attribute__((always_inline)) void native_t_pack4(
+    c6502_u32 *words, const c6502_u8 *source)
+{
+    c6502_u32 a = c6502_expand_2x[source[0]], b = c6502_expand_2x[source[1]];
+    c6502_u32 c = c6502_expand_2x[source[2]], d = c6502_expand_2x[source[3]];
+    words[0] = a | (b << 24);
+    words[1] = (b >> 8) | (c << 16);
+    words[2] = (c >> 16) | (d << 8);
+}
+
+static void native_t_write_byte(c6502_u32 x, c6502_u32 y, c6502_u8 bits)
+{
+    c6502_u32 offset = (C6502_VIEW_Y + (y * 3u + 1u) / 2u) *
+        C6502_FRAME_STRIDE + x * 3u;
+    c6502_u32 word;
+    if (x == 19u) bits &= 0xfeu;
+    word = c6502_expand_2x[bits];
+    native_t_store3(C6502_FRAMEBUFFER + offset, c6502_t_frame_shadow + offset, word);
+    if (!(y & 1u)) {
+        offset += C6502_FRAME_STRIDE;
+        native_t_store3(C6502_FRAMEBUFFER + offset, c6502_t_frame_shadow + offset, word);
+    }
+    c6502_perf.framebuffer_bytes += (y & 1u) ? 3u : 6u;
+    c6502_previous_frame[y * 20u + x] = bits;
+}
+
+/* Source is a snapshot and its hidden last pixel has already been masked.
+   Four guest bytes = twelve packed host bytes = three aligned words.
+   Scalar prefixes/tails preserve neighbouring pixels for arbitrary spans. */
+static void native_t_write_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
+    const c6502_u8 *source)
+{
+    c6502_u32 row, count = last - first + 1u, rows = (y & 1u) ? 1u : 2u;
+    c6502_u32 offset = (C6502_VIEW_Y + (y * 3u + 1u) / 2u) *
+        C6502_FRAME_STRIDE + first * 3u;
+    c6502_u8 *previous = c6502_previous_frame + y * 20u + first;
+    c6502_u32 index, groups = 0u;
+    for (index = 0u; index < count; ++index) previous[index] = source[index];
+    for (row = 0u; row < rows; ++row) {
+        volatile c6502_u8 *out = C6502_FRAMEBUFFER + offset;
+        c6502_u8 *shadow = c6502_t_frame_shadow + offset;
+        const c6502_u8 *in = source;
+        c6502_u32 column = first, remaining = count;
+        while ((column & 3u) && remaining) {
+            native_t_store3(out, shadow, c6502_expand_2x[*in++]);
+            out += 3u; shadow += 3u; ++column; --remaining;
+        }
+        while (remaining >= 4u) {
+            c6502_u32 words[3];
+            volatile c6502_u32 *physical = (volatile c6502_u32 *)out;
+            native_t_pack4(words, in);
+            ((c6502_u32 *)shadow)[0] = words[0];
+            ((c6502_u32 *)shadow)[1] = words[1];
+            ((c6502_u32 *)shadow)[2] = words[2];
+            physical[0] = words[0]; physical[1] = words[1]; physical[2] = words[2];
+            out += 12u; shadow += 12u; in += 4u; remaining -= 4u; ++groups;
+        }
+        while (remaining--) {
+            native_t_store3(out, shadow, c6502_expand_2x[*in++]);
+            out += 3u; shadow += 3u;
+        }
+        offset += C6502_FRAME_STRIDE;
+    }
+    c6502_perf.t_packed_groups += groups;
+    c6502_perf.framebuffer_bytes += count * 3u * rows;
+}
+
+/* Catch writes which bypass the normal guest mapping, as well as startup
+   and explicit invalidation. Unchanged rows do not regenerate any pixels. */
+static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
+{
+    c6502_u32 y, x, changed = 0u;
+    if (!c6502_frame_valid) {
+        c6502_u32 *words = (c6502_u32 *)c6502_t_frame_shadow;
+        for (x = 0u; x < C6502_HOST_FRAME_BYTES / 4u; ++x) words[x] = 0xffffffffu;
+        for (x = 0u; x < 256u; ++x) c6502_expand_2x[x] = native_t_expand((c6502_u8)x);
+    }
+    for (y = 0u; y < C6502_GUEST_HEIGHT; ++y) {
+        c6502_u8 row[20], *previous = c6502_previous_frame + y * 20u;
+        c6502_u32 dirty = !c6502_frame_valid, base = lcd_address(2u, y) - 2u;
+        row[0] = ram[lcd_address(0u, y)]; row[1] = ram[lcd_address(1u, y)];
+        for (x = 2u; x < 20u; ++x) row[x] = ram[base + x];
+        row[19] &= 0xfeu;
+        for (x = 0u; x < 20u; ++x) dirty |= row[x] != previous[x];
+        if (dirty) {
+            c6502_u32 offset = (C6502_VIEW_Y + (y * 3u + 1u) / 2u) * C6502_FRAME_STRIDE;
+            c6502_u32 *out = (c6502_u32 *)(c6502_t_frame_shadow + offset);
+            for (x = 0u; x < 20u; x += 4u) native_t_pack4(out + x * 3u / 4u, row + x);
+            if (!(y & 1u)) {
+                c6502_u32 *other = out + C6502_FRAME_STRIDE / 4u;
+                for (x = 0u; x < C6502_FRAME_STRIDE / 4u; ++x) other[x] = out[x];
+            }
+            for (x = 0u; x < 20u; ++x) previous[x] = row[x];
+            ++changed;
+        }
+    }
+    return changed;
+}
+#endif
+
 void c6502_native_present(void)
 {
     c6502_u8 *source = c6502_native_state.ram;
@@ -724,6 +867,22 @@ void c6502_native_present(void)
     c6502_u32 x;
     c6502_u32 started = native_clock(), changed = 0u;
     ++c6502_perf.presents;
+
+#ifdef C6502_TARGET_9288T
+    {
+        const c6502_u32 *expected = (const c6502_u32 *)c6502_t_frame_shadow;
+        volatile c6502_u32 *physical = (volatile c6502_u32 *)frame;
+        c6502_u32 repaired = 0u;
+        changed = native_t_update_shadow(source);
+        for (x = 0u; x < C6502_HOST_FRAME_BYTES / 4u; ++x) {
+            c6502_u32 word = expected[x];
+            if (physical[x] != word) { physical[x] = word; ++repaired; }
+        }
+        c6502_perf.framebuffer_bytes += repaired * 4u;
+        c6502_perf.framebuffer_audit_words += C6502_HOST_FRAME_BYTES / 4u;
+        c6502_perf.framebuffer_repaired_words += repaired;
+    }
+#else
 
     /* Expand each 1-bpp guest pixel to a 2x2 block, centred in the
        24..215 scan lines.  This path needs neither a GUI paint transaction
@@ -780,11 +939,22 @@ void c6502_native_present(void)
             carry = (bits & 1u) ? 0u : 0xc0u;
         }
     }
+#endif
     c6502_frame_valid = 1u;
     c6502_output_ready = 1u;
     c6502_perf.dirty_rows += changed;
     ++c6502_perf.submissions;
+#ifdef C6502_TARGET_9288T
+    {
+        c6502_u32 finished = native_clock();
+        c6502_perf.present_ticks += finished - started;
+        /* A slow audit must not immediately make the next audit overdue.
+           This is maintenance pacing only; guest Timer timing is unchanged. */
+        c6502_last_frame_tick = finished;
+    }
+#else
     c6502_perf.present_ticks += native_clock() - started;
+#endif
 }
 
 void c6502_native_invalidate_screen(void) { c6502_frame_valid = 0u; }
@@ -813,6 +983,9 @@ static void native_lcd_write(c6502_u16 address)
         if (y >= 96u) return;
     }
     bits = c6502_native_state.ram[address];
+#ifdef C6502_TARGET_9288T
+    native_t_write_byte(x, y, bits);
+#else
     if (x == 19u) bits &= 0xfeu;
     carry = x && (c6502_native_state.ram[lcd_address(x - 1u, y)] & 1u) ? 0u : 0xc0u;
     word = c6502_expand_2x[bits] | carry;
@@ -829,6 +1002,10 @@ static void native_lcd_write(c6502_u16 address)
     c6502_previous_frame[y * 20u + x] = bits;
     ++c6502_perf.mapped_lcd_bytes;
     c6502_perf.framebuffer_bytes += 8u;
+#endif
+#ifdef C6502_TARGET_9288T
+    ++c6502_perf.mapped_lcd_bytes;
+#endif
     /* Also sample within a full-screen blit, not just between drawing APIs.
        The clock gate in capture limits actual matrix scans to 256 Hz. */
     if (!(c6502_perf.mapped_lcd_bytes & 31u)) native_capture_keys();
@@ -896,8 +1073,8 @@ static void native_capture_keys(void)
     c6502_u8 saved_k5;
     c6502_u8 saved_port0;
     c6502_u8 saved_factors;
-    c6502_u32 now;
     c6502_u32 saved_psr;
+    c6502_u32 now;
     if (!c6502_input_active) return;
     /* Cheap fast gate for tight drawing/poll loops. A full-second gap can
        defer a scan by at most one divider tick, never a whole second. */
@@ -917,7 +1094,7 @@ static void native_capture_keys(void)
     *hardware_byte(C6502_K5_FUNCTION_ADDRESS) =
         (c6502_u8)(saved_k5 & ~0x0fu);
     *hardware_byte(C6502_PORT0_IOCTRL_ADDRESS) =
-        (c6502_u8)(saved_port0 & ~0x70u);
+        (c6502_u8)(saved_port0 & ~C6502_MATRIX_PORT_MASK);
     native_matrix_snapshot(current, now);
     *hardware_byte(C6502_KEY_ROW_SELECT_ADDRESS) = saved_row;
     *hardware_byte(C6502_K5_FUNCTION_ADDRESS) = saved_k5;
@@ -1298,6 +1475,11 @@ static void native_lcd_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
     }
     /* Hidden x=159 is masked only AFTER storing the exact guest RAM. */
     if (c6502_output_ready) {
+#ifdef C6502_TARGET_9288T
+        if (last == 19u) row[count - 1u] &= 0xfeu;
+        native_t_write_span(first, last, y, row);
+        c6502_perf.mapped_lcd_bytes += count;
+#else
         if (last == 19u) row[count - 1u] &= 0xfeu;
         if (first) carry = ((c6502_u32)(ram[lcd_address(first - 1u, y)] & 1u) - 1u) & 0xc0u;
         previous = c6502_previous_frame + y * 20u + first;
@@ -1318,6 +1500,7 @@ static void native_lcd_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
         }
         c6502_perf.mapped_lcd_bytes += count;
         c6502_perf.framebuffer_bytes += count * 8u;
+#endif
         /* At most 20 guest bytes between checkpoints, without a GUI pump. */
         native_capture_keys();
     }
@@ -1418,7 +1601,7 @@ static void picture_dummy(c6502_u32 *r)
     }
 }
 
-/* The 9288 font renderer consumes a 320x240 two-bit surface, never the
+/* The 9288 font renderer consumes a host-sized two-bit surface, never the
    game's 1920-byte monochrome buffer. Only glyphs use the staging surface. */
 static const c6502_u8 *native_glyph(const c6502_u8 *glyph, c6502_u8 width)
 {
@@ -1427,13 +1610,13 @@ static const c6502_u8 *native_glyph(const c6502_u8 *glyph, c6502_u8 width)
     c6502_u32 y, byte;
     if (entry->code == code) { ++c6502_perf.glyph_hits; return entry->rows; }
     ++c6502_perf.glyph_misses;
-    bytes_set(c6502_text_surface, 0xffu, 80u * 32u);
+    bytes_set(c6502_text_surface, 0xffu, C6502_FRAME_STRIDE * 32u);
     NATIVE_GAME_GUI(SysPrintString)(c6502_native_state.hdc, 0, 0,
         glyph, c6502_text_surface);
     for (y = 0u; y < 16u; ++y) {
         for (byte = 0u; byte < (c6502_u32)(width >> 3); ++byte) {
-            c6502_u8 a = (c6502_u8)~c6502_text_surface[y * 80u + byte * 2u];
-            c6502_u8 b = (c6502_u8)~c6502_text_surface[y * 80u + byte * 2u + 1u];
+            c6502_u8 a = (c6502_u8)~c6502_text_surface[y * C6502_FRAME_STRIDE + byte * 2u];
+            c6502_u8 b = (c6502_u8)~c6502_text_surface[y * C6502_FRAME_STRIDE + byte * 2u + 1u];
             entry->rows[y * (width >> 3) + byte] = (a & 0x80u) |
                 ((a & 0x20u) << 1) | ((a & 8u) << 2) | ((a & 2u) << 3) |
                 ((b & 0x80u) >> 4) | ((b & 0x20u) >> 3) |
@@ -3261,7 +3444,13 @@ void c6502_native_perf_end(void)
     FS_FILE *file;
     int log_ok;
 #ifdef C6502_PROFILE_OTHER
+#ifdef C6502_TARGET_9288T
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-ROW-AUDIT-1\nclock_hz=256\n";
+#else
     static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=OTHER-PROFILE-1\nclock_hz=256\n";
+#endif
+#elif defined(C6502_TARGET_9288T)
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-ROW-AUDIT-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
 #endif
@@ -3299,6 +3488,11 @@ void c6502_native_perf_end(void)
     NATIVE_LOG(presents); NATIVE_LOG(present_ticks);
     NATIVE_LOG(submissions); NATIVE_LOG(dirty_rows);
     NATIVE_LOG(mapped_lcd_bytes); NATIVE_LOG(framebuffer_bytes); NATIVE_LOG(repair_checks);
+#ifdef C6502_TARGET_9288T
+    native_log_value(file, "framebuffer_shadow_bytes", sizeof(c6502_t_frame_shadow));
+    NATIVE_LOG(framebuffer_audit_words); NATIVE_LOG(framebuffer_repaired_words);
+    NATIVE_LOG(t_packed_groups);
+#endif
     NATIVE_LOG(lcd_span_rows); NATIVE_LOG(lcd_span_bytes);
     NATIVE_LOG(picture_direct_bytes); NATIVE_LOG(picture_staged_bytes); NATIVE_LOG(picture_ordered_calls);
     NATIVE_LOG(key_scans); NATIVE_LOG(key_scan_max_gap_ticks);

@@ -39,10 +39,13 @@ def write_sdk_header(path: Path, data: bytes) -> None:
     path.write_bytes(b"".join(lines))
 
 
-def prepare_sdk_headers(sdk: Path, destination: Path) -> None:
-    source = sdk / "Down_Include"
+def prepare_sdk_headers(sdk: Path, destination: Path, *, target: str = "9288") -> None:
+    from a9288.targets import target_profile
+
+    profile = target_profile(target)
+    source = sdk / profile.sdk_directory
     if not source.is_dir():
-        raise SystemExit(f"9288 SDK headers not found: {source}")
+        raise SystemExit(f"{profile.name} SDK headers not found: {source}")
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True)
@@ -110,7 +113,16 @@ def read_icon(path: Path, width: int, height: int) -> bytes:
     return data
 
 
-def pack_kf2(payload: bytes, *, app_name: bytes = APP_NAME, icon_root: Path | None = None) -> bytes:
+def pack_kf2(
+    payload: bytes,
+    *,
+    app_name: bytes = APP_NAME,
+    icon_root: Path | None = None,
+    target: str = "9288",
+) -> bytes:
+    from a9288.targets import target_profile
+
+    profile = target_profile(target)
     if len(payload) > APP_MAX_PAYLOAD_SIZE:
         raise SystemExit(
             "9288 KF2 payload is too large for the application RAM window: "
@@ -118,9 +130,18 @@ def pack_kf2(payload: bytes, *, app_name: bytes = APP_NAME, icon_root: Path | No
         )
     if not app_name or len(app_name) > 15 or b"\0" in app_name:
         raise ValueError("KF2 name must contain 1-15 bytes and no embedded NUL")
-    icon_root = ICON_ROOT if icon_root is None else icon_root
-    icon1 = read_icon(icon_root / "ico1.bin", 40, 40)
-    icon2 = read_icon(icon_root / "ico2.bin", 16, 16)
+    if icon_root is None and profile.name == "9288T":
+        from a9288.app_options import icon_images
+        from a9288.icons import encode_icon
+
+        icon1, icon2 = (
+            encode_icon(image.width, image.height, [v // 85 for v in image.tobytes()])
+            for image in icon_images(target=target)
+        )
+    else:
+        icon_root = ICON_ROOT if icon_root is None else icon_root
+        icon1 = read_icon(icon_root / "ico1.bin", 40, 40)
+        icon2 = read_icon(icon_root / "ico2.bin", 16, 16)
     code_offset = HEADER_SIZE + len(icon1) + len(icon2)
     total_size = code_offset + len(payload)
     name = app_name.ljust(16, b"\0")
@@ -129,7 +150,7 @@ def pack_kf2(payload: bytes, *, app_name: bytes = APP_NAME, icon_root: Path | No
         MAGIC0,
         MAGIC1,
         MACHINE_9288,
-        APP_MODULE,
+        profile.module,
         name,
         code_offset,
         HEADER_SIZE,

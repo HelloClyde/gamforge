@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 
 from a9288.icons import decode_icon, encode_icon
 from a9288.paths import DATA
+from a9288.targets import target_profile
 
 MAX_NAME_BYTES = 15  # KF2's 16-byte field must retain its terminating NUL.
 
@@ -68,8 +69,15 @@ def c_name_definition(name: str) -> str:
     return '#define NATIVE_TITLE "' + "".join(f"\\x{b:02x}" for b in encoded) + '"\n'
 
 
-def icon_images(source: Path | None = None) -> tuple[Image.Image, Image.Image]:
-    """Preview exactly the same 40/16px four-gray resources used by KF2."""
+def icon_images(
+    source: Path | None = None, *, target: str = "9288"
+) -> tuple[Image.Image, Image.Image]:
+    """Preview KF2 resources: 9288 adds its frame; 9288T uses full-size artwork."""
+    framed = target_profile(target).name == "9288"
+
+    def four_gray(image):
+        return image.point(lambda v: 0 if v < 64 else 85 if v < 128 else 170 if v < 213 else 255)
+
     if source is None:
         images = []
         for stem, size in (("ico1", 40), ("ico2", 16)):
@@ -77,7 +85,12 @@ def icon_images(source: Path | None = None) -> tuple[Image.Image, Image.Image]:
             image = Image.new("L", (size, size))
             image.putdata([p * 85 for p in pixels])
             images.append(image)
-        return tuple(images)
+        if framed:
+            return tuple(images)
+        # The bundled default is already framed. Use only its original inner art
+        # for 9288T; do not crop user-supplied images, whose borders may be artwork.
+        image = four_gray(images[0].crop((5, 5, 35, 35)).resize((40, 40), Image.Resampling.LANCZOS))
+        return image, four_gray(image.resize((16, 16), Image.Resampling.LANCZOS))
     with Image.open(source) as loaded:
         if loaded.width * loaded.height > 25_000_000:
             raise ValueError("图标图片过大，请使用不超过 2500 万像素的图片。")
@@ -85,23 +98,25 @@ def icon_images(source: Path | None = None) -> tuple[Image.Image, Image.Image]:
     box = art.getchannel("A").getbbox()
     if box is None:
         raise ValueError("图片完全透明，请选择有可见内容的图标。")
-    art = ImageOps.contain(art.crop(box), (30, 30), Image.Resampling.LANCZOS)
-    square = Image.new("RGBA", (30, 30), "white")
-    square.alpha_composite(art, ((30 - art.width) // 2, (30 - art.height) // 2))
-    # Preserve the established 9288 outer frame, replacing its inner artwork.
-    frame = icon_images()[0]
-    frame.paste(square.convert("L"), (5, 5))
+    size = 30 if framed else 40
+    art = ImageOps.contain(art.crop(box), (size, size), Image.Resampling.LANCZOS)
+    square = Image.new("RGBA", (size, size), "white")
+    square.alpha_composite(art, ((size - art.width) // 2, (size - art.height) // 2))
+    image = square.convert("L")
+    if framed:
+        # Preserve the established 9288 outer frame, replacing its inner artwork.
+        frame = icon_images()[0]
+        frame.paste(image, (5, 5))
+        image = frame
+    image = four_gray(image)
+    return image, four_gray(image.resize((16, 16), Image.Resampling.LANCZOS))
 
-    def four_gray(image):
-        return image.point(lambda v: 0 if v < 64 else 85 if v < 128 else 170 if v < 213 else 255)
 
-    frame = four_gray(frame)
-    return frame, four_gray(frame.resize((16, 16), Image.Resampling.LANCZOS))
-
-
-def write_icons(destination: Path, source: Path | None = None) -> None:
+def write_icons(
+    destination: Path, source: Path | None = None, *, target: str = "9288"
+) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    for name, image in zip(("ico1", "ico2"), icon_images(source)):
+    for name, image in zip(("ico1", "ico2"), icon_images(source, target=target)):
         pixels = [v // 85 for v in image.tobytes()]
         (destination / (name + ".bin")).write_bytes(encode_icon(image.width, image.height, pixels))
 

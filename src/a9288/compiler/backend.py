@@ -53,41 +53,46 @@ def symbol_name(value: str) -> str:
 
 
 def imm(op: str, register: str, value: int) -> list[str]:
+    """Encode a 32-bit constant with at most two EXT prefixes.
+
+    Register-form EXT operands have only 26 bits. Immediate-form operands
+    include six bits in the final instruction and therefore support all 32.
+    Logical/LD/CMP immediates are signed; ADD/SUB immediates are unsigned.
+    """
+
+    if op not in ("ld.w", "cmp", "and", "or", "xor", "not", "add", "sub"):
+        raise ValueError(f"unsupported immediate operation: {op}")
     value &= 0xFFFFFFFF
     shown = value if value <= 0x7FFFFFFF else value - 0x100000000
-    if -32 <= shown <= 31:
+    unsigned = op in ("add", "sub")
+    if unsigned and value <= 63:
+        return [f"    {op} %{register}, {value}"]
+    if not unsigned and -32 <= shown <= 31:
         return [f"    {op} %{register}, {shown}"]
-    if op == "ld.w":
-        low = value & 0x3F
-        shown_low = low if low < 32 else low - 64
-        high = value >> 6
-        chunks: list[int] = []
-        while high:
-            chunks.append(high & 0x1FFF)
-            high >>= 13
-        if not chunks:
-            chunks.append(0)
-        return [
-            *(f"    ext {chunk}" for chunk in reversed(chunks)),
-            f"    ld.w %{register}, {shown_low}",
-        ]
-    chunks = []
-    remaining = value
-    while remaining:
-        chunks.append(remaining & 0x1FFF)
-        remaining >>= 13
+    low = value & 0x3F
+    shown_low = low if unsigned or low < 32 else low - 64
+    high = value >> 6
+    chunks: list[int] = []
+    while high:
+        chunks.append(high & 0x1FFF)
+        high >>= 13
     if not chunks:
+        chunks.append(0)
+    if not unsigned and len(chunks) == 1 and value & (1 << 18):
+        # One EXT is a *signed* 19-bit operand. Positive bit-18 constants
+        # need a leading zero EXT rather than accidental sign extension.
         chunks.append(0)
     return [
         *(f"    ext {chunk}" for chunk in reversed(chunks)),
-        f"    {op} %{register}, %{register}",
+        f"    {op} %{register}, {shown_low}",
     ]
 
 
 def ext_prefix(value: int) -> list[str]:
     """Encode the full immediate consumed by a following register-form op."""
 
-    value &= 0xFFFFFFFF
+    if not 0 <= value < (1 << 26):
+        raise ValueError(f"register-form EXT operand exceeds 26 bits: {value}")
     chunks: list[int] = []
     while value:
         chunks.append(value & 0x1FFF)

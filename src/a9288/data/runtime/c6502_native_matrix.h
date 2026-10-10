@@ -5,6 +5,11 @@
  * level from being immediately interpreted as a different physical key.
  * These are bounded MMIO settling reads, not a millisecond input delay. */
 #define C6502_MATRIX_SETTLE_READS 4u
+#ifdef C6502_TARGET_9288T
+#define C6502_MATRIX_PORT_MASK 0xf0u
+#else
+#define C6502_MATRIX_PORT_MASK 0x70u
+#endif
 static c6502_u32 c6502_matrix_unstable_rows;
 static c6502_u32 c6502_matrix_action_checks, c6502_matrix_action_rejected;
 /* Last eight independent action rechecks: seq,tick,row,first,verify,right. */
@@ -14,7 +19,8 @@ static c6502_u8 native_matrix_columns(void)
 {
     c6502_u8 k5 = *hardware_byte(C6502_K5_DATA_ADDRESS);
     c6502_u8 p0 = *hardware_byte(C6502_PORT0_DATA_ADDRESS);
-    return (c6502_u8)(((c6502_u8)~k5 & 15u) | ((c6502_u8)~p0 & 0x70u));
+    return (c6502_u8)(((c6502_u8)~k5 & 15u) |
+        ((c6502_u8)~p0 & C6502_MATRIX_PORT_MASK));
 }
 
 static void native_matrix_settle(void)
@@ -45,6 +51,24 @@ static c6502_u8 native_matrix_row(c6502_u32 row, c6502_u8 previous)
 static void native_matrix_snapshot(c6502_u8 current[8], c6502_u32 now)
 {
     c6502_u32 row;
+#ifdef C6502_TARGET_9288T
+    static c6502_u8 previous[8];
+    c6502_u8 physical[8];
+    for (row = 0u; row < 8u; ++row) {
+        physical[row] = native_matrix_row(row, previous[row]);
+        previous[row] = physical[row];
+        current[row] = 0u;
+    }
+    /* 9288T has eight columns and a different physical layout. Normalize
+       the six game controls into the unchanged logical input/FIFO ABI. */
+    if (physical[7] & 128u) current[7] |= 64u; /* Right */
+    if (physical[6] & 16u) current[7] |= 32u;  /* Left */
+    if (physical[7] & 16u) current[7] |= 16u;  /* Down */
+    if (physical[6] & 32u) current[7] |= 8u;   /* Up */
+    if (physical[4] & 16u) current[0] |= 64u;  /* Escape */
+    if (physical[5] & 16u) current[1] |= 64u;  /* Enter */
+    (void)now;
+#else
     for (row = 0u; row < 8u; ++row)
         current[row] = native_matrix_row(row,
             c6502_key_initialized ? c6502_key_previous[row] : 0u);
@@ -66,6 +90,7 @@ static void native_matrix_snapshot(c6502_u8 current[8], c6502_u32 now)
             ++c6502_matrix_action_rejected;
         }
     }
+#endif
     *hardware_byte(C6502_KEY_ROW_SELECT_ADDRESS) = 0xffu;
     native_matrix_settle();
 }

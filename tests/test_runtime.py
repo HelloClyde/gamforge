@@ -1133,6 +1133,7 @@ typedef unsigned char c6502_u8;
 typedef unsigned short c6502_u16;
 typedef unsigned int c6502_u32;
 static unsigned char c6502_text_surface[19200], target[96][160];
+#define C6502_FRAME_STRIDE FONT_STRIDE
 static struct { unsigned hdc; } c6502_native_state;
 static unsigned calls;
 static void bytes_set(unsigned char *p,unsigned char v,unsigned n){memset(p,v,n);}
@@ -1165,8 +1166,11 @@ int main(void){
             c = Path(folder) / "text.c"
             exe = Path(folder) / "text.exe"
             c.write_text(source, encoding="utf-8")
-            subprocess.run([cc, "-O2", str(c), "-o", str(exe)], check=True)
-            subprocess.run([str(exe)], check=True)
+            for stride in (80, 60):
+                subprocess.run(
+                    [cc, "-O2", f"-DFONT_STRIDE={stride}u", str(c), "-o", str(exe)], check=True
+                )
+                subprocess.run([str(exe)], check=True)
 
     def test_compare16_matches_c6502_rom_flags_and_register_results(self):
         if not DEFAULT_ROME.is_file():

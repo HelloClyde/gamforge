@@ -14,8 +14,10 @@ from a9288.app_options import c_name_definition, default_app_name, encode_app_na
 from a9288.compiler import kf2 as build_9288
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.compiler.fast_helpers import fast_helper
+from a9288.compiler.s1c33_compat import preserve_comparison_flags
 from a9288.paths import DATA, WORK, child_environment, task_command
 from a9288.resources import HEADER, c_resource_config, pack_resources
+from a9288.targets import target_profile
 
 
 def runtime_supported_bridges() -> tuple[str, ...]:
@@ -230,8 +232,8 @@ def generate_bridges(
             # avoids a needlessly synthesized shift-by-15 sequence.
             "    ld.w %r0, %r12",
             "    srl %r0, 8",
-            "    ext 63",
-            "    cmp %r0, %r0",
+            "    ext 0",
+            "    cmp %r0, -1",  # 63 in the immediate-compare encoding
             f"    jrugt {slow}",
             "    cmp %r0, 0",
             f"    jrne {fast}",
@@ -392,6 +394,7 @@ def generate_bridges(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
+    parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -410,7 +413,8 @@ def main() -> None:
 
     app_name = args.app_name if args.app_name is not None else default_app_name(args.game.stem)
     name_bytes = encode_app_name(app_name)
-    print("[GAM9288_STAGE] prepare|检查 9288 SDK 与工具链", flush=True)
+    profile = target_profile(args.target)
+    print(f"[GAM9288_STAGE] prepare|检查 {profile.name} SDK 与工具链", flush=True)
 
     clang = build_9288.find_tool(args.toolchain, "clang")
     verify_9288_abi(clang)
@@ -421,7 +425,7 @@ def main() -> None:
     sdk_include = args.work_dir / "sdk-include-native"
     runtime_build = args.work_dir / "c6502-native-runtime"
     runtime_build.mkdir(parents=True, exist_ok=True)
-    build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include)
+    build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include, target=args.target)
     config = runtime_build / "c6502_native_app_config.h"
     config.write_text(c_name_definition(app_name), encoding="ascii")
     resource = None
@@ -432,7 +436,7 @@ def main() -> None:
             encoding="ascii",
         )
     icons = runtime_build / "icons"
-    write_icons(icons, args.icon)
+    write_icons(icons, args.icon, target=args.target)
 
     run(
         task_command(
@@ -495,6 +499,8 @@ def main() -> None:
         str(config),
     ]
     objects = [combined]
+    if args.target == "9288t":
+        flags.append("-DC6502_TARGET_9288T=1")
     if args.profile_other:
         flags.append("-DC6502_PROFILE_OTHER=1")
     for source in (
@@ -505,7 +511,15 @@ def main() -> None:
         bridge_s,
     ):
         obj = runtime_build / (source.stem + ".o")
-        run([clang, *flags, "-c", str(source), "-o", str(obj)])
+        if args.target == "9288t" and source.suffix == ".c":
+            assembly = runtime_build / (source.stem + ".S")
+            run([clang, *flags, "-S", str(source), "-o", str(assembly)])
+            text, guarded = preserve_comparison_flags(assembly.read_text(encoding="utf-8"))
+            assembly.write_text(text, encoding="utf-8")
+            print(f"9288T preview PSR compatibility: {source.name}, {guarded} loads", flush=True)
+            run([clang, "--target=s1c33-none-elf", "-c", str(assembly), "-o", str(obj)])
+        else:
+            run([clang, *flags, "-c", str(source), "-o", str(obj)])
         objects.append(obj)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -536,7 +550,7 @@ def main() -> None:
     if len(payload) != expected:
         raise SystemExit(f"payload size mismatch: {len(payload)} != {expected}")
     print("[GAM9288_STAGE] pack|生成名称、图标与 KF2 EXE", flush=True)
-    app = build_9288.pack_kf2(payload, app_name=name_bytes, icon_root=icons)
+    app = build_9288.pack_kf2(payload, app_name=name_bytes, icon_root=icons, target=args.target)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(app)
     if resource is not None:

@@ -97,6 +97,46 @@ class NativeConverterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             options.icon_images(source)
 
+    def test_9288t_icon_uses_full_artwork_and_exact_preview(self):
+        source = self.folder / "无框.png"
+        Image.new("RGBA", (80, 80), (0, 0, 0, 255)).save(source)
+        big, small = options.icon_images(source, target="9288T")
+        self.assertEqual((big.size, small.size), ((40, 40), (16, 16)))
+        self.assertEqual(set(big.tobytes()), {0})  # No white frame on any edge.
+        self.assertEqual(set(small.tobytes()), {0})
+        options.write_icons(self.folder / "icons", source, target="9288t")
+        for name, image in (("ico1", big), ("ico2", small)):
+            decoded = options.decode_icon(
+                self.folder / "icons" / (name + ".bin"), image.width, image.height
+            )
+            self.assertEqual(bytes(v * 85 for v in decoded), image.tobytes())
+
+    def test_9288t_icon_preserves_aspect_and_original_border(self):
+        source = self.folder / "宽图.png"
+        art = Image.new("RGB", (40, 10), "black")
+        art.putpixel((0, 5), (255, 255, 255))
+        art.save(source)
+        big, _ = options.icon_images(source, target="9288t")
+        self.assertEqual(big.getpixel((20, 10)), 255)
+        self.assertEqual(big.getpixel((39, 20)), 0)
+        self.assertEqual(big.getpixel((0, 20)), 255)  # User artwork is not cropped.
+        self.assertEqual(big.getpixel((1, 20)), 0)
+
+    def test_9288t_default_icon_omits_bundled_frame(self):
+        framed, _ = options.icon_images()
+        big, small = options.icon_images(target="9288t")
+        expected = framed.crop((5, 5, 35, 35)).resize((40, 40), Image.Resampling.LANCZOS)
+        expected = expected.point(
+            lambda v: 0 if v < 64 else 85 if v < 128 else 170 if v < 213 else 255
+        )
+        self.assertEqual(big.tobytes(), expected.tobytes())
+        self.assertNotEqual(big.tobytes(), framed.tobytes())
+        self.assertTrue(set(small.tobytes()) <= {0, 85, 170, 255})
+
+    def test_icons_reject_unknown_target(self):
+        with self.assertRaisesRegex(ValueError, "不支持的输出机型"):
+            options.icon_images(target="9588")
+
     def test_kf2_actual_metadata_and_default_compatibility(self):
         options.write_icons(self.folder)
         name = options.encode_app_name("魔塔原生")
@@ -169,6 +209,25 @@ class NativeConverterTest(unittest.TestCase):
         result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
         self.assertEqual(result["app_name"], "魔塔")
         self.assertFalse(result["runtime_interpreter_fallback"])
+
+    def test_9288t_report_and_worker_target(self):
+        args = self.args()
+        args.target = "9288T"
+        stage = args.work_dir / "native-result/program.exe"
+        stage.parent.mkdir(parents=True)
+        for suffix in (".exe", ".elf", ".map"):
+            stage.with_suffix(suffix).write_bytes(b"new-valid-artifact")
+        report = args.work_dir / "c6502-s1c33-direct/report.json"
+        report.parent.mkdir()
+        report.write_text("{}")
+        with patch.object(driver.subprocess, "run") as run:
+            driver.convert(args)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--target") + 1], "9288t")
+        result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["target"], "9288t")
+        self.assertEqual((result["screen_width"], result["screen_height"]), (240, 160))
+        self.assertEqual(result["display_scale"], "1.5x")
 
     def test_atomic_copy_failure_leaves_destination(self):
         source = self.folder / "source"

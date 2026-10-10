@@ -22,7 +22,15 @@ from PIL import Image, ImageTk
 from a9288.app_options import default_app_name, encode_app_name, icon_images, inspect_game
 from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
-from a9288.paths import USER_DATA, WORK, child_environment, dependency_setting, task_command
+from a9288.paths import (
+    DEPENDENCIES,
+    USER_DATA,
+    WORK,
+    child_environment,
+    dependency_setting,
+    task_command,
+)
+from a9288.targets import TARGETS, target_profile
 
 SETTINGS = USER_DATA / "settings.json"
 BG = "#f3f6fb"
@@ -47,6 +55,7 @@ class Conversion:
     rom8: Path = DEFAULT_ROM8
     rome: Path = DEFAULT_ROME
     external_resources: bool = False
+    target: str = "9288"
 
     def validate(self):
         inspect_game(self.game)
@@ -55,8 +64,11 @@ class Conversion:
             raise ValueError("输出文件必须以 .exe 结尾。")
         if self.output.resolve() == self.game.resolve():
             raise ValueError("不能覆盖原始 GAM。")
-        if not (self.sdk / "Down_Include").is_dir():
-            raise ValueError("找不到 9288 SDK 的 Down_Include，请在「编译环境」中配置。")
+        profile = target_profile(self.target)
+        if not (self.sdk / profile.sdk_directory).is_dir():
+            raise ValueError(
+                f"找不到 {profile.name} SDK 的 {profile.sdk_directory}，请在「编译环境」中配置。"
+            )
         for name in ("clang", "llvm-objcopy", "ld.lld", "llvm-readelf"):
             if not any(
                 (self.toolchain / p).is_file()
@@ -68,12 +80,14 @@ class Conversion:
                 raise ValueError(f"请在「编译环境」中配置用户自备的 2 MiB 固件：{path.name}")
         if not bundled_helper().is_file() and not shutil.which("gcc"):
             raise ValueError("源码版需要 PC gcc；分发版自带启动状态生成工具。")
-        icon_images(self.icon)
+        icon_images(self.icon, target=self.target)
 
     def command(self, work: Path) -> list[str]:
         command = task_command(
             "cli",
             str(self.game),
+            "--target",
+            self.target.lower(),
             "--app-name",
             self.name,
             "--output",
@@ -202,6 +216,19 @@ class ConverterApp:
         except (OSError, ValueError):
             pass
         self.sdk = tk.StringVar(value=dependency_setting(settings.get("sdk"), DEFAULT_SDK))
+        self.target = tk.StringVar(value=settings.get("target", "9288").lower())
+        if self.target.get() not in TARGETS:
+            self.target.set("9288")
+        self.target_display = tk.StringVar(value=target_profile(self.target.get()).name)
+        self.sdk_paths = {
+            "9288": self.sdk.get(),
+            "9288t": dependency_setting(
+                settings.get("sdk9288t"),
+                Path(os.environ.get("A9288T_SDK", DEPENDENCIES / "sdk9288t")),
+            ),
+        }
+        self.current_target = self.target.get()
+        self.sdk.set(self.sdk_paths[self.current_target])
         self.toolchain = tk.StringVar(
             value=dependency_setting(settings.get("toolchain"), DEFAULT_TOOLCHAIN)
         )
@@ -213,6 +240,7 @@ class ConverterApp:
         self.inputs = []
         self._style()
         self._layout()
+        self.target.trace_add("write", lambda *_: self._target_changed())
         self._preview()
         self.name.trace_add("write", lambda *_: self._name_changed())
         self.output.trace_add("write", lambda *_: self._output_changed())
@@ -269,12 +297,21 @@ class ConverterApp:
         return widget
 
     def _layout(self):
-        shell = tk.Frame(self.root, bg=BG, padx=28, pady=20)
-        shell.pack(fill="both", expand=True)
+        # Extra host settings must remain reachable on 768/1080px displays
+        # and with Windows DPI scaling. Never clip the conversion controls.
+        viewport = tk.Canvas(self.root, bg=BG, highlightthickness=0)
+        page_scroll = ttk.Scrollbar(self.root, orient="vertical", command=viewport.yview)
+        page_scroll.pack(side="right", fill="y")
+        viewport.pack(side="left", fill="both", expand=True)
+        viewport.configure(yscrollcommand=page_scroll.set)
+        shell = tk.Frame(viewport, bg=BG, padx=28, pady=20)
+        page = viewport.create_window((0, 0), window=shell, anchor="nw")
+        shell.bind("<Configure>", lambda _: viewport.configure(scrollregion=viewport.bbox("all")))
+        viewport.bind("<Configure>", lambda event: viewport.itemconfigure(page, width=event.width))
         head = tk.Frame(shell, bg=BG)
         head.pack(fill="x", pady=(0, 18))
         self.label(head, "GAMForge", 23, bold=True).pack(side="left")
-        self.label(head, "A 系列 GAM  →  BBK 9288 原生程序", 10, color=MUTED).pack(
+        self.label(head, "A 系列 GAM  →  BBK 9288 / 9288T 原生程序", 10, color=MUTED).pack(
             side="right", pady=9
         )
         content = tk.Frame(shell, bg=BG)
@@ -304,7 +341,7 @@ class ConverterApp:
         entry.grid(row=4, column=0, columnspan=2, sticky="ew")
         self.inputs.append(entry)
         self.name_hint = self.label(
-            left, "写入 9288 桌面名称和窗口标题，最多 15 个 GBK 字节。", 9, color=MUTED
+            left, "写入桌面名称和窗口标题，最多 15 个 GBK 字节。", 9, color=MUTED
         )
         self.name_hint.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.label(left, "03   输出文件", 12, bold=True).grid(
@@ -327,11 +364,30 @@ class ConverterApp:
         self.label(left, "EXE 放 A:\\系统\\程序；RES 放 A:\\系统\\数据。", 9, color=MUTED).grid(
             row=10, column=0, columnspan=2, sticky="w"
         )
-
+        self.label(left, "输出机型", 10, bold=True).grid(row=11, column=0, sticky="w", pady=(12, 0))
+        target = ttk.Combobox(
+            left,
+            textvariable=self.target_display,
+            values=tuple(profile.name for profile in TARGETS.values()),
+            state="readonly",
+            width=12,
+        )
+        target.bind(
+            "<<ComboboxSelected>>", lambda _: self.target.set(self.target_display.get().lower())
+        )
+        target.grid(row=11, column=1, sticky="e", pady=(12, 0))
+        self.inputs.append(target)
+        self.target_hint = self.label(left, "", 9, color=MUTED)
+        self.target_hint.grid(row=12, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        profile = target_profile(self.target.get())
+        self.target_hint.configure(
+            text=f"{profile.width} × {profile.height} · 游戏画面 {profile.scale}"
+            + (" · 模拟器启动已验证，真机待验证" if profile.name == "9288T" else "")
+        )
         right = self.card(content)
         right.grid(row=0, column=1, sticky="nsew")
         right.configure(width=285)
-        self.label(right, "9288 桌面预览", 12, bold=True).pack(anchor="w")
+        self.label(right, "桌面图标预览", 12, bold=True).pack(anchor="w")
         self.large = tk.Label(right, bg="white")
         self.large.pack(pady=(17, 5))
         self.preview_name = self.label(right, "程序名称", 11, bold=True)
@@ -340,9 +396,8 @@ class ConverterApp:
         smallrow.pack(pady=(13, 8))
         self.small = tk.Label(smallrow, bg="white")
         self.small.pack(side="left", padx=(0, 10))
-        self.label(
-            smallrow, "40 × 40 / 16 × 16\n四灰阶 · 保留系统边框", 9, color=MUTED, justify="left"
-        ).pack(side="left")
+        self.icon_hint = self.label(smallrow, "", 9, color=MUTED, justify="left")
+        self.icon_hint.pack(side="left")
         controls = tk.Frame(right, bg="white")
         controls.pack(fill="x", pady=(10, 0))
         self.button(controls, "替换图标…", self.choose_icon).pack(side="left", padx=(0, 6))
@@ -354,7 +409,7 @@ class ConverterApp:
         envhead.pack(fill="x", pady=(10, 5))
         self.env_button = ttk.Button(envhead, text="编译环境…", command=self.toggle_environment)
         self.env_button.pack(side="left")
-        self.label(envhead, "使用 9288 SDK 和当前工程工具链，不上传文件。", 9, color=MUTED).pack(
+        self.label(envhead, "按输出机型选择对应 SDK；不上传文件。", 9, color=MUTED).pack(
             side="left", padx=12
         )
         self.env_window = tk.Toplevel(self.root)
@@ -369,7 +424,7 @@ class ConverterApp:
         self.env.columnconfigure(1, weight=1)
         for i, (label, var) in enumerate(
             (
-                ("9288 SDK", self.sdk),
+                ("当前机型 SDK", self.sdk),
                 ("S1C33 工具链", self.toolchain),
                 ("A 系列 8.BIN", self.rom8),
                 ("A 系列 E.BIN", self.rome),
@@ -411,7 +466,7 @@ class ConverterApp:
         row.pack(fill="x", pady=(12, 0))
         self.convert_button = ttk.Button(
             row,
-            text="一键转换为 9288 EXE",
+            text="一键转换为原生 EXE",
             style="Accent.TButton",
             command=self.convert,
             state="disabled",
@@ -448,7 +503,7 @@ class ConverterApp:
         self.log.configure(yscrollcommand=scroll.set)
         self.label(
             shell,
-            "输出 EXE 运行于 9288，不是 Windows 程序。编译成功不代表所有游戏功能都已验证。",
+            "输出 EXE 运行于所选 BBK 机型，不是 Windows 程序。编译成功不代表完整兼容。",
             9,
             color=MUTED,
         ).pack(anchor="w", pady=(9, 0))
@@ -483,11 +538,11 @@ class ConverterApp:
         current = Path(self.output.get()) if self.output.get() else WORK / "converted/game.exe"
         path = filedialog.asksaveasfilename(
             parent=self.root,
-            title="保存 9288 EXE",
+            title=f"保存 {target_profile(self.target.get()).name} EXE",
             defaultextension=".exe",
             initialfile=current.name,
             initialdir=str(current.parent) if current.parent.exists() else str(Path.home()),
-            filetypes=[("9288 EXE", "*.exe")],
+            filetypes=[("BBK 原生 EXE", "*.exe")],
         )
         if path:
             self.output.set(path)
@@ -524,13 +579,30 @@ class ConverterApp:
         self.icon_path = None
         self._preview()
 
+    def _target_changed(self):
+        self.sdk_paths[self.current_target] = self.sdk.get()
+        self.current_target = self.target.get()
+        self.sdk.set(self.sdk_paths[self.current_target])
+        profile = target_profile(self.current_target)
+        self.target_display.set(profile.name)
+        self.target_hint.configure(
+            text=f"{profile.width} × {profile.height} · 游戏画面 {profile.scale}"
+            + (" · 模拟器启动已验证，真机待验证" if profile.name == "9288T" else "")
+        )
+        self._preview()
+
     def _preview(self):
-        big, small = icon_images(self.icon_path)
+        target = self.target.get()
+        big, small = icon_images(self.icon_path, target=target)
         self.big_photo = ImageTk.PhotoImage(big.resize((160, 160), Image.Resampling.NEAREST))
         self.small_photo = ImageTk.PhotoImage(small.resize((32, 32), Image.Resampling.NEAREST))
         self.large.configure(image=self.big_photo)
         self.small.configure(image=self.small_photo)
         self.icon_label.configure(text=self.icon_path.name if self.icon_path else "使用默认图标")
+        self.icon_hint.configure(
+            text="40 × 40 / 16 × 16\n四灰阶 · "
+            + ("保留系统边框" if target_profile(target).name == "9288" else "不加白框背景")
+        )
 
     def _name_changed(self):
         preview = self.name.get() or "程序名称"
@@ -592,6 +664,7 @@ class ConverterApp:
                 Path(self.rom8.get()).resolve(),
                 Path(self.rome.get()).resolve(),
                 external_resources=self.external_resources.get(),
+                target=self.target.get(),
             )
             config.validate()
         except Exception as exc:
@@ -608,7 +681,13 @@ class ConverterApp:
             SETTINGS.write_text(
                 json.dumps(
                     dict(
-                        sdk=self.sdk.get(),
+                        sdk=self.sdk.get()
+                        if self.target.get() == "9288"
+                        else self.sdk_paths["9288"],
+                        sdk9288t=self.sdk.get()
+                        if self.target.get() == "9288t"
+                        else self.sdk_paths["9288t"],
+                        target=self.target.get(),
                         toolchain=self.toolchain.get(),
                         rom8=self.rom8.get(),
                         rome=self.rome.get(),

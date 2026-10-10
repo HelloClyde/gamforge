@@ -38,13 +38,19 @@ def publish_file(source: Path, destination: Path) -> None:
 
 
 def convert(args) -> None:
+    from a9288.targets import target_profile
+
+    target = getattr(args, "target", "9288").lower()
+    profile = target_profile(target)
+    if target == "9288t":
+        print("提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。", flush=True)
     game = args.game.resolve()
     inspect_game(game)
     name = args.app_name if args.app_name is not None else default_app_name(game.stem)
     encode_app_name(name)
     sdk = args.sdk.resolve()
     if not sdk.is_dir():
-        raise ValueError(f"9288 SDK not found: {sdk}")
+        raise ValueError(f"{profile.name} SDK not found: {sdk}")
     output = args.output.resolve() if args.output else Path.cwd() / f"{game.stem}-NATIVE.exe"
     if output.suffix.lower() != ".exe":
         raise ValueError("输出文件必须以 .exe 结尾。")
@@ -55,6 +61,8 @@ def convert(args) -> None:
     command = task_command(
         "compiler.build",
         str(game),
+        "--target",
+        target,
         "--sdk",
         str(sdk),
         "--toolchain",
@@ -102,11 +110,17 @@ def convert(args) -> None:
             "runtime_guest_cycle_scheduler": False,
             "runtime_interpreter_fallback": False,
             "bridge_contract": "explicit-native-case-required",
-            "host_sdk_abi": "9288-gnu33-r6-r9-return-r4-reserved-r15",
+            "host_sdk_abi": f"{target}-gnu33-r6-r9-return-r4-reserved-r15",
             "profile_other": bool(getattr(args, "profile_other", False)),
             "output_elf": str(output.with_suffix(".elf")),
             "output_map": str(output.with_suffix(".map")),
             "sdk": str(sdk),
+            "target": target,
+            "target_name": profile.name,
+            "screen_width": profile.width,
+            "screen_height": profile.height,
+            "display_scale": profile.scale,
+            "target_experimental": target == "9288t",
         }
     )
     if external:
@@ -146,6 +160,7 @@ def convert(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path, help="input .gam file")
+    parser.add_argument("--target", type=str.lower, choices=("9288", "9288t"), default="9288")
     parser.add_argument("--sdk", type=Path, default=DEFAULT_SDK)
     parser.add_argument("--toolchain", type=Path, default=DEFAULT_TOOLCHAIN)
     parser.add_argument("--output", type=Path)
@@ -165,6 +180,8 @@ def main() -> None:
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
     args = parser.parse_args()
+    if args.target == "9288t" and args.sdk == DEFAULT_SDK:
+        args.sdk = Path(os.environ.get("A9288T_SDK", DEPENDENCIES / "sdk9288t"))
     try:
         with compiler_lock(WORK / "native-compiler.lock"):
             convert(args)

@@ -22,11 +22,13 @@ def main():
     assert icon_images()[0].size == (40, 40)
     packed = kf2.pack_kf2(b"\0\0", app_name=encode_app_name("测试"))
     assert packed[:4] == b"KF2\0"
+    assert struct.unpack_from("<H", kf2.pack_kf2(b"\0\0", target="9288t"), 10)[0] == 0x0208
     print(
         json.dumps(
             {
                 "self_test": "PASS",
                 "version": __version__,
+                "targets": ["9288", "9288t"],
                 "synthetic_blocks": len(records),
                 "boot_helper": bundled_helper().is_file(),
                 "dependencies": {

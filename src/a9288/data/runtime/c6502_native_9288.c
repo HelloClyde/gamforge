@@ -2,6 +2,7 @@
 #include "CRTL/malloc.h"
 #include "c6502_native_runtime.h"
 #include "c6502_native_exit.h"
+#include "c6502_native_host.h"
 
 #ifndef NATIVE_TITLE
 #define NATIVE_TITLE "GAM NATIVE"
@@ -43,19 +44,19 @@ T_WORD App_Main(void)
                                    (const T_BYTE *)error, MB_OK);
         return 0;
     }
-    desktop = (c6502_u8 *)malloc(19200u);
+    desktop = (c6502_u8 *)malloc(C6502_HOST_FRAME_BYTES);
     if (!desktop) {
         c6502_native_release();
         return 0;
     }
-    for (index = 0u; index < 19200u; ++index)
+    for (index = 0u; index < C6502_HOST_FRAME_BYTES; ++index)
         desktop[index] = lcd[index];
     for (index = 0; index < sizeof(info); ++index)
         ((c6502_u8 *)&info)[index] = 0;
     info.dwStyle = WS_VISIBLE | WS_CAPTION;
     info.spCaption = (const T_BYTE *)NATIVE_TITLE;
     info.MainWindowProc = native_window_proc;
-    info.rx = 320; info.by = 240;
+    info.rx = C6502_HOST_WIDTH; info.by = C6502_HOST_HEIGHT;
     info.iBkColor = COLOR_LIGHTWHITE;
     info.hHosting = HWND_DESKTOP;
     window = fnGUI_CreateMainWindow(&info);
@@ -141,11 +142,11 @@ T_WORD App_Main(void)
                     busy |= *(volatile c6502_u8 *)(0x0004822cu + channel * 16u) & 1u;
                 if (!busy) break;
             }
-            for (index = 0u; index < 19200u; ++index)
+            for (index = 0u; index < C6502_HOST_FRAME_BYTES; ++index)
                 lcd[index] = desktop[index];
         }
     }
-    for (index = 0u; index < 19200u; ++index)
+    for (index = 0u; index < C6502_HOST_FRAME_BYTES; ++index)
         lcd[index] = desktop[index];
     free(desktop);
     return 0;

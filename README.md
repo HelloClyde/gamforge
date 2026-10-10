@@ -4,14 +4,14 @@
 
 GAMForge · GAM 原生重编译器
 
-将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 原生程序。
+将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 / 9288T 原生程序。
 
-Recompile BBK A-series GAM games into native BBK 9288 applications.
+Recompile BBK A-series GAM games into native BBK 9288 / 9288T applications.
 
 [![CI](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml/badge.svg)](https://github.com/HelloClyde/gamforge/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 BBK 9288 的 S1C33 原生程序**，
+把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 BBK 9288 / 9288T 的 S1C33 原生程序**，
 封装为安装在“娱乐”分类中的独立 KF2 EXE。提供 Windows 图形界面和命令行工具。
 
 > 当前是实验性编译器，不是“任意 GAM 均兼容”的成品。编译成功不代表全流程或
@@ -20,7 +20,8 @@ Recompile BBK A-series GAM games into native BBK 9288 applications.
 ## 功能
 
 - 选择 GAM，查看标题、体积与入口；设置程序名称和图标。
-- 40×40 / 16×16 四灰阶图标预览，保留 9288 系统边框。
+- 输出机型可选 9288（320×240，2×）或 9288T（240×160，1.5×），分别使用对应 SDK。
+- 40×40 / 16×16 四灰阶图标预览；9288 保留系统边框，9288T 不添加白框背景。
 - 一键原生转换，显示真实阶段、耗时与日志，支持取消。
 - 名称写入 KF2 和应用标题；默认输出文件名跟随名称。
 - 编译成功、链接完整及体积检查通过后才替换旧 EXE。
@@ -40,7 +41,8 @@ Recompile BBK A-series GAM games into native BBK 9288 applications.
 
 全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和轻量版不含它们。
 请保留包内 `dependencies`、`_internal` 目录，不要只复制单个 EXE。支持 Windows 10/11 x64。
-仅支持 **9288 SDK**，不能用 9588 SDK 替代。
+输出 9288 时使用 **9288 SDK**，输出 9288T 时使用 **9288T SDK**；不能用 9588 SDK 替代。
+已发布的 v1.1.2 全套包只含 9288 依赖，不含本次新增的 9288T 支持。
 工具链不是普通 LLVM；构建方法见 [工具链说明](toolchain/README.md)。
 
 名称最多 15 个 GBK 字节（通常 7 个汉字），不支持 emoji。9288 桌面标签采用 EXE
@@ -82,6 +84,19 @@ python -m venv .venv
 可使用 `A9288_SDK`、`A9288_TOOLCHAIN`、`A9288_ROM8`、`A9288_ROME` 设置默认值。
 `A9288_WORKSPACE` 可覆盖工作目录。不会联网上传游戏、图标或转换产物。
 
+### 输出 9288T EXE
+
+界面选择“输出机型 → 9288T”，在“编译环境”选择含 `include/Dsys.h` 的
+9288T SDK 根目录。两种机型的 SDK 路径分别记忆，不会复用另一机型的设置。
+命令行添加 `--target 9288t --sdk "你的9288T SDK根目录"`；
+`A9288T_SDK` 可设置其默认路径。工具链和 A 系列 BIN 与 9288 转换共用。
+
+9288T 保留完整游戏画面，采用 1.5× 最近邻缩放；上下各留 8 像素。
+支持方向、确定、退出键轮询，保留内置资源 / 外置 RES 两种模式和娱乐分类。
+这是 **GAM → 9288T EXE**，不接收既有 9288T EXE 作为翻译输入。
+适配范围与验证记录见 [9288T 输出说明](docs/9288t-target.md)。
+**9288T 已验证《魔塔》《伏魔记》的模拟器启动；仍需真机验证，不保证任意 GAM 或完整游戏流程兼容。**
+
 ## 项目结构
 
 ```text
@@ -89,6 +104,7 @@ src/a9288/
   gui.py, cli.py       界面与公共转换入口
   app_options.py      GAM 校验、名称和图标策略
   paths.py            安装路径、工作区、子进程协议
+  targets.py          9288 / 9288T 输出机型与 SDK 配置
   compiler/
     frontend.py       函数、调用关系和控制流恢复
     cfg.py, isa.py    6502 解码与控制流基础设施

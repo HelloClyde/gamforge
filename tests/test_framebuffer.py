@@ -26,7 +26,8 @@ def test_compiled_lcd_stores_cannot_bypass_mirror(tmp_path):
     assert "    ld.w %r11, [%sp+0]\n    add %sp, 4\n    ret" in writes
 
 
-def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path):
+@pytest.mark.parametrize("target", ["9288", "9288t"])
+def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, target):
     cc = shutil.which("gcc")
     if not cc:
         pytest.skip("host gcc is not installed")
@@ -57,11 +58,15 @@ typedef unsigned char c6502_u8;typedef unsigned short c6502_u16;typedef unsigned
 #define C6502_GUEST_HEIGHT 96u
 #define C6502_FRAME_STRIDE 80u
 #define C6502_FRAME_HEIGHT 240u
+#define C6502_HOST_FRAME_BYTES (C6502_FRAME_STRIDE*C6502_FRAME_HEIGHT)
 #define C6502_FRAME_TICKS 64u
 #define C6502_RESOURCE_SCRATCH_SIZE 1920u
 static unsigned char ram[32768],game[12288],c6502_resource_scratch[1920];
 static unsigned char host_frame[19200] __attribute__((aligned(4)));
 static unsigned char expected[19200],before[19200];
+#ifdef C6502_TARGET_9288T
+static unsigned char c6502_t_frame_shadow[9600] __attribute__((aligned(4)));
+#endif
 #define C6502_FRAMEBUFFER host_frame
 static struct {unsigned char *ram,*game;unsigned game_size;unsigned short banks[16];unsigned char bank_select;}
  c6502_native_state={ram,game,12288};
@@ -181,6 +186,26 @@ int main(void){
  memset(host_frame,0x69,sizeof(host_frame));memcpy(before,host_frame,sizeof(before));
  guest_write(0x413,0xaa);assert(!memcmp(before,host_frame,sizeof(before))); /* before attach */
  c6502_native_present();reference();
+#ifdef C6502_TARGET_9288T
+ /* Aligned word groups, every scalar prefix/tail, both vertical scales,
+    the hidden final bit and the exceptional folded row 65. */
+ unsigned ys_span[]={0,1,64,65,66,95};unsigned char span[20];
+ for(unsigned yy=0;yy<6;++yy)for(unsigned first=0;first<20;++first)
+  for(unsigned last=first;last<20;++last){
+   for(unsigned x=0;x<=last-first;++x)span[x]=(x*43+first*17+last*31)&255;
+   native_lcd_span(first,last,ys_span[yy],span,0xff,0xff);reference();
+  }
+ /* Exhaust the lookup in each lane of an aligned four-byte group. */
+ for(unsigned lane=0;lane<4;++lane)for(unsigned value=0;value<256;++value){
+  memset(span,0x5a,20);span[lane]=value;
+  native_lcd_span(0,3,1,span,0xff,0xff);reference();
+  native_lcd_span(16,19,65,span,0xff,0xff);reference();
+ }
+ assert(c6502_perf.t_packed_groups>0);
+ /* A normal whole-RAM change is visible even if it bypassed guest_write. */
+ ram[lcd_address(4,66)]^=0xa5;c6502_native_present();reference();
+ memset(&c6502_perf,0,sizeof(c6502_perf));
+#endif
  unsigned presents=c6502_perf.presents;
  /* Every address in the LCD envelope, including holes and folded row 65. */
  for(unsigned a=0x401;a<=0x1000;++a){guest_write(a,(a*29+71)&255);reference();}
@@ -232,6 +257,15 @@ int main(void){
  clock_value=64;native_refresh_if_due();reference();
  bytes=c6502_perf.framebuffer_bytes;clock_value=128;native_refresh_if_due();
  assert(c6502_perf.framebuffer_bytes==bytes); /* unchanged audit writes nothing */
+#ifdef C6502_TARGET_9288T
+ unsigned audits=c6502_perf.framebuffer_audit_words,repaired=c6502_perf.framebuffer_repaired_words;
+ c6502_native_present();reference();
+ assert(c6502_perf.framebuffer_audit_words-audits==2400);
+ assert(c6502_perf.framebuffer_repaired_words==repaired);
+ host_frame[8*60+31]^=1;c6502_native_present();reference();
+ assert(c6502_perf.framebuffer_repaired_words-repaired==1);
+ assert(c6502_perf.framebuffer_bytes-bytes==4); /* one corrupted word, not an entire frame */
+#endif
  host_frame[19200-1]=0;c6502_native_invalidate_screen();native_refresh_if_due();reference();
  differential_pictures();
  puts("DIRECT-FB: all LCD addresses, values, aliases, primitives, animation and repair PASS");
@@ -239,6 +273,20 @@ int main(void){
 }
 """
     )
+    if target == "9288t":
+        # Run the same guest-memory oracle against the smaller physical LCD.
+        source = "#define C6502_TARGET_9288T 1\n" + source
+        source = source.replace("C6502_VIEW_Y 24u", "C6502_VIEW_Y 8u")
+        source = source.replace("C6502_FRAME_STRIDE 80u", "C6502_FRAME_STRIDE 60u")
+        source = source.replace("C6502_FRAME_HEIGHT 240u", "C6502_FRAME_HEIGHT 160u")
+        source = source.replace("[19200]", "[9600]").replace("[19200-1]", "[9600-1]")
+        source = source.replace(
+            "for(unsigned yy=24+y*2;yy<26+y*2;++yy)for(unsigned xx=1+x*2;xx<3+x*2;++xx)",
+            "for(unsigned yy=8+(y*3+1)/2;yy<8+((y+1)*3+1)/2;++yy)"
+            "for(unsigned xx=(x*3+1)/2;xx<((x+1)*3+1)/2;++xx)",
+        ).replace("expected[yy*80+xx/4]", "expected[yy*60+xx/4]")
+        source = source.replace("==288", "==144").replace("==15360", "==8640")
+        source = source.replace("host_frame+80*90+9", "host_frame+60*90+9")
     c = tmp_path / "mirror.c"
     exe = tmp_path / "mirror.exe"
     c.write_text(source, encoding="utf-8")
