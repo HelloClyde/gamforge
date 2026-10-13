@@ -8,6 +8,10 @@
 #define NATIVE_TITLE "GAM NATIVE"
 #endif
 
+/* DestroyMainWindow leaves queue cleanup to App_Main. Remember a close
+   delivered by the release barrier: its Quit may already be consumed. */
+static c6502_u8 native_window_closed;
+
 static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
     T_GUI_WPARAM wparam, T_GUI_LPARAM lparam)
 {
@@ -33,8 +37,14 @@ static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
         return 0;
     }
     if (message == MSG_CLOSE) {
+        if (native_window_closed) return 0;
+        native_window_closed = 1u;
+        c6502_native_exit_checkpoint(NATIVE_EXIT_DESTROY_WINDOW, 0u, (c6502_u32)window);
         fnGUI_DestroyMainWindow(window);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_DESTROY_WINDOW, 1u, (c6502_u32)window);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_POST_QUIT, 0u, (c6502_u32)window);
         fnGUI_PostQuitMessage(window);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_POST_QUIT, 1u, (c6502_u32)window);
         return 0;
     }
     return fnGUI_DefaultMainWinProc(window, message, wparam, lparam);
@@ -77,14 +87,18 @@ T_WORD App_Main(void)
     info.rx = C6502_HOST_WIDTH; info.by = C6502_HOST_HEIGHT;
     info.iBkColor = COLOR_LIGHTWHITE;
     info.hHosting = HWND_DESKTOP;
+    native_window_closed = 0u;
     window = fnGUI_CreateMainWindow(&info);
-    if (!window) { c6502_native_release(); free(desktop); return -1; }
+    if (!window || window == HWND_INVALID) {
+        c6502_native_release(); free(desktop); return -1;
+    }
     (void)fnGUI_ShowWindow(window, SW_SHOWNORMAL);
     while (fnGUI_GetMessage(&message, window)) {
         fnGUI_TranslateMessage(&message);
         fnGUI_DispatchMessage(&message);
         if (message.message == MSG_PAINT) break;
     }
+    if (native_window_closed) goto release_game;
     (void)fnGUI_SetActiveWindow(window);
     (void)fnGUI_SetFocus(window);
     c6502_native_state.window = window;
@@ -109,21 +123,32 @@ T_WORD App_Main(void)
     c6502_native_present();
     c6502_native_perf_begin();
     c6502_native_enter(c6502_entry_regs);
+    c6502_native_exit_begin();
 #ifdef C6502_TARGET_9288S
     (void)fnGUI_KillTimer(window, 2);
 #endif
+    c6502_native_exit_checkpoint(NATIVE_EXIT_PERF, 0u, 0u);
     c6502_native_perf_end();
+    c6502_native_exit_checkpoint(NATIVE_EXIT_PERF, 1u, 0u);
     /* Rejoin the host message framework only after guest execution ends.
        Timer #1 drives the release/host-input handoff, not the game. */
+    c6502_native_exit_checkpoint(NATIVE_EXIT_TIMER_START, 0u, (c6502_u32)window);
     (void)fnGUI_SetTimer(window, 1, 1);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_TIMER_START, 1u, (c6502_u32)window);
     /* The game may return while Confirm is still physically held. Keep
        our focus until release; otherwise the desktop can see that hold. */
+    c6502_native_exit_checkpoint(NATIVE_EXIT_INPUT_RELEASE, 0u, (c6502_u32)window);
     c6502_native_finish_input();
+    c6502_native_exit_checkpoint(NATIVE_EXIT_INPUT_RELEASE, 1u, native_window_closed);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_TIMER_STOP, 0u, (c6502_u32)window);
     (void)fnGUI_KillTimer(window, 1);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_TIMER_STOP, 1u, (c6502_u32)window);
     /* Return the keyboard to the firmware BEFORE entering a modal dialog.
        Also put the short error in its caption: some firmware revisions do
        not render MessageBox body text reliably after direct LCD drawing. */
-    if (c6502_native_resource_error()) {
+    /* An already closed window cannot parent another modal dialog. */
+    if (c6502_native_resource_error() && !native_window_closed) {
+        c6502_native_exit_checkpoint(NATIVE_EXIT_ERROR_DIALOG, 0u, (c6502_u32)window);
         fnGUI_MessageBox(window, (const T_BYTE *)c6502_native_resource_error(),
                          (const T_BYTE *)c6502_native_resource_error(), MB_OK);
         /* Consume the dialog acknowledgement's release before returning
@@ -133,31 +158,51 @@ T_WORD App_Main(void)
         (void)fnGUI_SetTimer(window, 1, 1);
         c6502_native_finish_input();
         (void)fnGUI_KillTimer(window, 1);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_ERROR_DIALOG, 1u, native_window_closed);
     }
+release_game:
     if (c6502_native_state.hdc) {
+        c6502_native_exit_checkpoint(NATIVE_EXIT_RELEASE_DC, 0u,
+                                     (c6502_u32)c6502_native_state.hdc);
         fnGUI_ReleaseDC(c6502_native_state.hdc);
         c6502_native_state.hdc = 0;
+        c6502_native_exit_checkpoint(NATIVE_EXIT_RELEASE_DC, 1u, 0u);
     }
     c6502_native_state.window = 0;
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RELEASE_GAME, 0u, 0u);
     c6502_native_release();
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RELEASE_GAME, 1u, 0u);
     /* Discard only this app's queued gameplay keys, never loader messages.
        Follow the SDK's close -> filtered Quit -> cleanup lifecycle. */
-    fnGUI_ThrowAwayMessages(window);
-    fnGUI_PostMessage(window, MSG_CLOSE, 0, 0);
-    while (fnGUI_GetMessage(&message, window)) {
-        native_dispatch_teardown(&message);
+    if (!native_window_closed) {
+        c6502_native_exit_checkpoint(NATIVE_EXIT_CLOSE_WINDOW, 0u, (c6502_u32)window);
+        fnGUI_ThrowAwayMessages(window);
+        fnGUI_PostMessage(window, MSG_CLOSE, 0, 0);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_CLOSE_WINDOW, 1u, (c6502_u32)window);
+        c6502_native_exit_checkpoint(NATIVE_EXIT_DRAIN_WINDOW, 0u, (c6502_u32)window);
+        while (fnGUI_GetMessage(&message, window)) {
+            native_dispatch_teardown(&message);
+        }
+        c6502_native_exit_checkpoint(NATIVE_EXIT_DRAIN_WINDOW, 1u, native_window_closed);
     }
+    c6502_native_exit_checkpoint(NATIVE_EXIT_CLEANUP_WINDOW, 0u, (c6502_u32)window);
     fnGUI_ThrowAwayMessages(window);
     fnGUI_MainWindowCleanup(window);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_CLEANUP_WINDOW, 1u, (c6502_u32)window);
+#ifndef C6502_TARGET_9288T
+    /* The two-launcher-boundary workaround belongs to the verified 9288
+       lifecycle. T's official program cleans its own window and returns;
+       never dispatch loader/desktop messages on the outgoing T app stack. */
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RESTORE_LAUNCHER, 0u, (c6502_u32)launcher);
     {
         T_GUI_HWND active = fnGUI_GetActiveWindow();
-        if (active && active != window && fnGUI_IsWindow(active))
+        if (active && active != HWND_INVALID && active != window && fnGUI_IsWindow(active))
             launcher = active;
     }
-    if (launcher && fnGUI_IsWindow(launcher)) {
+    if (launcher && launcher != HWND_INVALID && fnGUI_IsWindow(launcher)) {
         c6502_u32 round;
         (void)fnGUI_SetActiveWindow(launcher);
-        if (!focus || !fnGUI_IsWindow(focus)) focus = launcher;
+        if (!focus || focus == HWND_INVALID || !fnGUI_IsWindow(focus)) focus = launcher;
         (void)fnGUI_SetFocus(focus);
         /* V1.5 can submit a late white DC page after window cleanup.
            Use the verified launcher-only two-boundary restore protocol
@@ -183,8 +228,15 @@ T_WORD App_Main(void)
                 lcd[index] = desktop[index];
         }
     }
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RESTORE_LAUNCHER, 1u, (c6502_u32)launcher);
+#endif
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RESTORE_FRAME, 0u, C6502_HOST_FRAME_BYTES);
     for (index = 0u; index < C6502_HOST_FRAME_BYTES; ++index)
         lcd[index] = desktop[index];
+    c6502_native_exit_checkpoint(NATIVE_EXIT_RESTORE_FRAME, 1u, C6502_HOST_FRAME_BYTES);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_FREE_DESKTOP, 0u, (c6502_u32)desktop);
     free(desktop);
+    c6502_native_exit_checkpoint(NATIVE_EXIT_FREE_DESKTOP, 1u, 0u);
+    c6502_native_exit_complete();
     return 0;
 }

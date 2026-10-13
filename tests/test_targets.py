@@ -107,6 +107,7 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
         ("9288", None, "2x", (318, 192, 1, 24)),
         ("9288T", None, "1x", (159, 96, 40, 32)),
         ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
+        ("9288t", "1.5x-linear", "1.5x-linear", (239, 144, 0, 8)),
         ("9288s", None, "1x", (159, 96, 0, 12)),
         ("tsw600", None, "1x", (159, 96, 0, 12)),
     ],
@@ -186,7 +187,7 @@ def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
         assert str(app.scale_combo.cget("state")) == "disabled"
         app.target.set("9288t")
         assert app.display_scale.get() == "1x"
-        assert tuple(app.scale_combo.cget("values")) == ("1x", "1.5x")
+        assert tuple(app.scale_combo.cget("values")) == ("1x", "1.5x", "1.5x-linear")
         assert str(app.scale_combo.cget("state")) == "readonly"
         app.display_scale.set("1.5x")
         assert "239 × 144" in app.target_hint.cget("text")
@@ -194,6 +195,12 @@ def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
         assert app.display_scale.get() == "2x"
         app.target.set("9288t")
         assert app.display_scale.get() == "1.5x"
+        app.display_scale.set("1.5x-linear")
+        assert "四灰阶双线性放大" in app.target_hint.cget("text")
+        app.target.set("9288s")
+        assert app.display_scale.get() == "1x"
+        app.target.set("9288t")
+        assert app.display_scale.get() == "1.5x-linear"
         root.update_idletasks()
     finally:
         root.destroy()

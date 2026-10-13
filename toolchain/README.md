@@ -25,3 +25,14 @@ python scripts/build_toolchain.py --jobs 2
 脚本只在项目 `build/toolchain` 下创建源代码与构建目录，不重置用户的现有 LLVM checkout。
 输出为 `dist/s1c33-9288-toolchain.zip`。分发时保留上游许可证、固定提交和补丁。
 9288 SDK 是独立依赖，不包含在这个工具链 ZIP 中。
+
+## 帧地址展开与 PSR 依赖
+
+`9288-gnu33-abi.patch` 也修正 `ADJFI` 的 `Uses = [SP]` / `Defs = [PSR]`。
+该伪指令在调度后展开成 `LD SP + ADD`，ADD 会改变比较标志；不声明这个依赖，
+就可能生成 `CMP → ADD → 条件跳转`，让绘图对齐等判断走错分支。
+
+转换器同时在 C → 汇编 → 对象文件之间保护已识别的帧地址展开，兼容既有工具链。
+因此源码更新后重新转换游戏即可使用修复，不要求用户先重建 LLVM；
+现有 EXE 不会自动修复，旧的发布包也不会因此自动更新。
+根因、验证方法和边界见 [代码生成正确性记录](../docs/compiler-correctness.md)。

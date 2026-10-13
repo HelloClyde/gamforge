@@ -176,3 +176,100 @@ def test_exit_order_and_launcher_filter_are_kept():
     assert "fnGUI_DispatchMessage" not in exit_path
     assert "fnGUI_GetMessage(&message, launcher)" in exit_path
     assert "round < 2u" in exit_path and "0x0004822cu" in exit_path
+
+
+def test_actual_t_app_teardown_closes_once_and_never_pumps_launcher(tmp_path):
+    app = (DATA / "runtime/c6502_native_9288.c").read_text(encoding="utf-8")
+    app = re.sub(r'^#include "[^"]+"\n', "", app, flags=re.M)
+    # Only replace the MMIO pointer; execute the real App_Main and callback.
+    # No SDK calls/close-state guards are replaced in the code under test.
+    app = app.replace("(volatile c6502_u8 *)0x003c0000u", "framebuffer")
+    run_c(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+typedef unsigned char c6502_u8,T_BYTE;
+typedef unsigned c6502_u32,T_WORD,T_GUI_HWND,T_GUI_HDC,T_GUI_WPARAM,T_GUI_LPARAM;
+#define C6502_TARGET_9288T 1
+#define C6502_HOST_WIDTH 240u
+#define C6502_HOST_HEIGHT 160u
+#define C6502_HOST_FRAME_BYTES 9600u
+#include "c6502_native_lifecycle.h"
+enum {MSG_ERASEBKGND=1,MSG_PAINT=2,MSG_CLOSE=3,MSG_TIMER=4,
+ MSG_FIRSTKEYMSG=20,MSG_LASTKEYMSG=30,MSG_DT_KEYOFF=70,MSG_DT_KEYDOWN=90,MSG_DT_SYSKEYUP=100,
+ HWND_DESKTOP=0,HWND_INVALID=0xffffffffu,WS_VISIBLE=1,WS_CAPTION=2,
+ COLOR_LIGHTWHITE=3,SW_SHOWNORMAL=1,MB_OK=1};
+typedef struct {unsigned dwStyle,dwExStyle;const unsigned char*spCaption;
+ T_WORD(*MainWindowProc)(T_GUI_HWND,T_WORD,T_GUI_WPARAM,T_GUI_LPARAM);
+ unsigned rx,by,iBkColor,hHosting;} T_GUI_MainWinCreate;
+typedef struct {unsigned message,hWnd,wParam,lParam;} T_GUI_Msg;
+static struct {unsigned window,hdc;} c6502_native_state;
+static unsigned c6502_entry_regs[15];
+static unsigned scenario,destroys,cleanups,posts,quits,game_enters,releases,
+ gets,finish_calls,timer_starts,timer_stops,frees,show_calls;
+static unsigned char framebuffer[9600];
+static T_WORD(*callback)(T_GUI_HWND,T_WORD,T_GUI_WPARAM,T_GUI_LPARAM);
+static int c6502_native_prepare(void){return 1;}
+static const char*c6502_native_resource_error(void){return 0;}
+static unsigned fnGUI_GetActiveWindow(void){return 64;}
+static unsigned fnGUI_GetFocus(void){return 66;}
+static unsigned fnGUI_CreateMainWindow(T_GUI_MainWinCreate*info){
+ callback=info->MainWindowProc;return scenario==4?HWND_INVALID:77;}
+static unsigned fnGUI_ShowWindow(unsigned w,unsigned mode){assert(w==77);++show_calls;return 1;}
+static unsigned fnGUI_SetActiveWindow(unsigned w){assert(w==77);return 1;}
+static unsigned fnGUI_SetFocus(unsigned w){assert(w==77);return 1;}
+static unsigned fnGUI_GetDC(unsigned w){assert(w==0);return 88;}
+static void fnGUI_ReleaseDC(unsigned dc){assert(dc==88);}
+static void fnGUI_DestroyMainWindow(unsigned w){assert(w==77 && !destroys);++destroys;}
+static void fnGUI_PostQuitMessage(unsigned w){assert(w==77);++quits;}
+static unsigned fnGUI_DefaultMainWinProc(unsigned w,unsigned m,unsigned wp,unsigned lp){return 0;}
+static void c6502_native_invalidate_screen(void){}
+static void fnGUI_ThrowAwayMessages(unsigned w){assert(w==77);}
+static void fnGUI_MainWindowCleanup(unsigned w){assert(w==77 && destroys==1);++cleanups;}
+static void fnGUI_PostMessage(unsigned w,unsigned m,unsigned wp,unsigned lp){
+ assert(w==77 && m==MSG_CLOSE && !destroys);++posts;}
+static int fnGUI_GetMessage(T_GUI_Msg*m,unsigned w){
+ assert(w==77); /* NEVER dispatch the launcher's queue on our application stack. */
+ if(quits){--quits;return 0;}++gets;assert(gets<5);
+ m->hWnd=w;m->wParam=m->lParam=0;
+ m->message=gets==1?(scenario==3?MSG_CLOSE:MSG_PAINT):MSG_CLOSE;return 1;}
+static void fnGUI_TranslateMessage(T_GUI_Msg*m){}
+static void fnGUI_DispatchMessage(T_GUI_Msg*m){callback(m->hWnd,m->message,m->wParam,m->lParam);}
+#include "c6502_native_exit.h"
+static int fnGUI_SetTimer(unsigned w,unsigned id,unsigned period){assert(w==77 && id==1);++timer_starts;return 1;}
+static int fnGUI_KillTimer(unsigned w,unsigned id){assert(w==77 && id==1);++timer_stops;return 1;}
+static void fnGUI_MessageBox(unsigned w,const unsigned char*t,const unsigned char*b,unsigned style){assert(0);}
+static void c6502_native_present(void){memset(framebuffer,0,sizeof(framebuffer));}
+static void c6502_native_perf_begin(void){}
+static void c6502_native_perf_end(void){}
+static void c6502_native_enter(unsigned*r){++game_enters;}
+static void c6502_native_finish_input(void){
+ ++finish_calls;
+ if(scenario==1 || scenario==2){
+  callback(77,MSG_CLOSE,0,0);assert(quits==1);quits=0; /* barrier consumed Quit */
+  if(scenario==2)callback(77,MSG_CLOSE,0,0); /* repeated CLOSE is idempotent */
+ }
+}
+static void c6502_native_release(void){++releases;}
+static void logged_free(void*p){++frees;free(p);}
+#define free logged_free
+"""
+        + app
+        + r"""
+int main(void){for(scenario=0;scenario<5;++scenario){
+ destroys=cleanups=posts=quits=game_enters=releases=gets=finish_calls=0;
+ timer_starts=timer_stops=frees=show_calls=0;
+ c6502_native_state.window=c6502_native_state.hdc=0;
+ memset(framebuffer,0xa5,sizeof(framebuffer));
+ unsigned returned=App_Main();assert(releases==1 && frees==1);
+ for(unsigned i=0;i<sizeof(framebuffer);++i)assert(framebuffer[i]==0xa5);
+ if(scenario==4){assert(returned==(unsigned)-1 && !destroys && !cleanups && !show_calls);continue;}
+ assert(returned==0 && destroys==1 && cleanups==1 && !quits);
+ assert(game_enters==(scenario==3?0:1));
+ assert(posts==(scenario==0?1:0)); /* Never close a window twice. */
+ assert(timer_starts==timer_stops && finish_calls==(scenario==3?0:1));
+ }return 0;}
+""",
+    )

@@ -5,6 +5,99 @@ from py65.devices.mpu65c02 import MPU
 from a9288.compiler.boot import DEFAULT_ROME
 
 
+def trace_rom_menu(count, columns, selection, start, style, keys):
+    """Execute ROM GuiMenu including its real layout/navigation helpers.
+
+    Only external input, keyboard state and drawing services are mocked.
+    Keys are already-translated (message kind, value) pairs. Test fixtures
+    contain synthetic items, never bytes from a copyrighted game.
+    """
+    import json
+
+    from a9288.paths import DATA
+
+    memory = FirmwareMemory(9)
+    cpu = MPU(memory=memory)
+    ram = memory.ram
+    ram[0x28:0x2A] = (0x1800).to_bytes(2, "little")
+    ram[0x1800:0x1804] = bytes.fromhex("00260826")
+    ram[0x2600:0x2607] = bytes((count, columns, 0x10, 0x26, style, 0x20, 0x26))
+    ram[0x2608:0x2610] = bytes((10, 149, 0, 79, start, 0, 0, 0))
+    ram[0x2610 : 0x2610 + columns] = bytes(i * 70 for i in range(columns))
+    for i in range(count):
+        item, text = 0x2700 + i * 7, 0x3000 + i * 16
+        ram[0x2620 + i * 2 : 0x2622 + i * 2] = item.to_bytes(2, "little")
+        ram[item : item + 7] = bytes((4,)) + text.to_bytes(2, "little") + bytes.fromhex("00400041")
+        ram[text : text + 5] = b"item\0"
+    slot = 0xE94D
+    cpu.pc = memory[slot] | memory[slot + 1] << 8
+    cpu.a, cpu.sp, cpu.p = selection, 0xFD, 0x30
+    ram[0x1FE:0x200] = b"\xff\x1f"
+    names = {
+        int(k): v
+        for k, v in json.loads((DATA / "c6502_symbols.json").read_text())["firmware"].items()
+    }
+    calls, cursor, keyboard = [], 0, 0x1234
+
+    def word(address):
+        return memory[address] | memory[(address + 1) & 65535] << 8
+
+    def ret8(value):
+        cpu.a = value & 255
+        cpu.FlagsNZ(cpu.a)
+
+    for _ in range(3000000):
+        if cpu.pc == 0x2000:
+            return dict(result=cpu.a, env=list(ram[0x2608:0x2610]), calls=calls, messages=cursor)
+        if cpu.pc != 0xD2F6:
+            cpu.step()
+            continue
+        table, sp = word(0x26), word(0x28)
+        name = names.get(table, hex(table))
+        if name in ("GuiGetMsg", "GuiTranslateMsg"):
+            if name == "GuiGetMsg":
+                if cursor >= len(keys):
+                    raise AssertionError("Menu did not return for supplied keys")
+                kind, value = keys[cursor]
+                cursor += 1
+                dest = word(sp)
+                ram[dest : dest + 3] = bytes((kind, value & 255, value >> 8))
+            ret8(1)
+        elif name == "GuiGetKbdState":
+            ram[0x20:0x22] = keyboard.to_bytes(2, "little")
+            ret8(keyboard >> 8)
+        elif name == "GuiSetKbdState":
+            keyboard = word(sp)
+        elif (
+            name
+            in (
+                "GuiSetInputFilter",
+                "GuiSetKbdType",
+                "SysIconAllSave",
+                "SysIconAllRestore",
+                "SysIconAllClear",
+                "GuiMsgQuePop",
+                "GuiHelp",
+            )
+            or table == 0xEA25
+        ):
+            ret8(0)  # No pending host command at menu entry.
+        elif name in ("SysLcdPartClear", "SysLcdReverse"):
+            calls.append((name, [cpu.a, *ram[sp : sp + 3]]))
+        elif name == "SysPrintString":
+            address = word(sp + 1)
+            text = bytes(ram[address : address + 64]).split(b"\0")[0]
+            calls.append((name, [cpu.a, ram[sp], text.hex()]))
+        elif name == "SysPicture":
+            calls.append((name, [cpu.a, *ram[sp : sp + 6]]))
+        elif name.startswith("SysIcon"):
+            calls.append((name, [cpu.a]))
+        else:
+            raise AssertionError(f"Unmocked menu external API: {name} ({table:04x})")
+        cpu.pc = (cpu.stPopWord() + 1) & 65535
+    raise AssertionError(f"Menu did not return: {cpu.pc:04x}")
+
+
 class FirmwareMemory:
     def __init__(self, bank):
         self.rom = DEFAULT_ROME.read_bytes()

@@ -127,6 +127,7 @@ typedef struct C6502_Perf {
     c6502_u32 timer_backward_rejected, timer_advance_chunks, timer_advance_chunks_max;
     c6502_u32 framebuffer_audit_words, framebuffer_repaired_words;
     c6502_u32 t_packed_groups;
+    c6502_u32 linear_rows, linear_unchanged_spans, linear_batches;
 } C6502_Perf;
 static C6502_Perf c6502_perf;
 static c6502_u32 native_clock(void);
@@ -734,7 +735,9 @@ static void rectangle_clear(
 #endif
 
 #ifdef C6502_HOST_PACKED_1X
-#ifdef C6502_T_SCALE_1_5
+#ifdef C6502_T_FILTER_LINEAR
+#include "c6502_native_linear.h"
+#elif defined(C6502_T_SCALE_1_5)
 /* Twelve host pixels per guest byte. Each guest pixel occupies 2,1,2,1...
  * pixels, retaining every source pixel on the 240x160 host. */
 static c6502_u32 native_t_expand(c6502_u8 bits)
@@ -899,6 +902,9 @@ static void native_t_write_span(c6502_u32 first, c6502_u32 last, c6502_u32 y,
    and explicit invalidation. Unchanged rows do not regenerate any pixels. */
 static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
 {
+#ifdef C6502_T_FILTER_LINEAR
+    return native_linear_update_shadow(ram);
+#else
     c6502_u32 y, x, changed = 0u;
     if (!c6502_frame_valid) {
         c6502_u32 *words = (c6502_u32 *)c6502_t_frame_shadow;
@@ -942,7 +948,13 @@ static c6502_u32 native_t_update_shadow(const c6502_u8 *ram)
         }
     }
     return changed;
+#endif
 }
+#endif
+
+#ifndef NATIVE_LINEAR_BEGIN
+#define NATIVE_LINEAR_BEGIN() ((void)0)
+#define NATIVE_LINEAR_END() ((void)0)
 #endif
 
 void c6502_native_present(void)
@@ -1151,6 +1163,9 @@ static void write_psr(c6502_u32 value)
 #include "c6502_native_matrix.h"
 #include "c6502_native_exit.h"
 #include "c6502_native_clock.h"
+#ifdef C6502_CRASH_TRACE
+#include "c6502_native_debug.h"
+#endif
 
 #ifdef C6502_TARGET_9288S
 static c6502_u8 c6502_s_pumping;
@@ -1166,6 +1181,14 @@ void c6502_native_pointer(T_WORD message, T_GUI_LPARAM lparam)
 {
     c6502_u8 previous = c6502_s_touch_key, current[8];
     c6502_u32 now;
+#ifdef C6502_CRASH_TRACE
+    if (nd_session_running && message == MSG_LBUTTONDOWN &&
+        (lparam & 0xffffu) >= C6502_HOST_WIDTH - 16u &&
+        (lparam >> 16) < 12u) {
+        nd_pending ^= 1u;
+        return; /* Debug button is in the top margin, not the game. */
+    }
+#endif
     ++c6502_s_touch_events;
     c6502_s_last_pointer_message = message;
     c6502_s_last_pointer_position = lparam;
@@ -1258,6 +1281,9 @@ static void native_capture_keys(void)
     native_s_matrix(current, *hardware_byte(C6502_K5_DATA_ADDRESS),
                     *hardware_byte(C6502_PORT0_DATA_ADDRESS));
     native_key_snapshot(current, now);
+#ifdef C6502_CRASH_TRACE
+    nd_capture_service();
+#endif
     return;
 #endif
     saved_psr = read_psr();
@@ -1291,6 +1317,9 @@ static void native_capture_keys(void)
     np_key(now); /* Observe the existing scan; do not trigger another one. */
 #endif
     native_key_snapshot(current, now);
+#ifdef C6502_CRASH_TRACE
+    nd_capture_service(); /* IRQ/ports restored above; safe host ABI. */
+#endif
 }
 
 static c6502_u32 native_clock(void)
@@ -1762,6 +1791,7 @@ static void picture_dummy(c6502_u32 *r)
     for (index = 0u; index < length; ++index)
         c6502_resource_scratch[index] = guest_read(
             (c6502_u16)(picture + index));
+    NATIVE_LINEAR_BEGIN();
     for (index = 0u; index < (c6502_u32)(y1 - y0 + 1u); ++index) {
         c6502_u32 stride = ((c6502_u32)x1 - x0 + 8u) >> 3;
         if ((x0 >> 3) == (x1 >> 3)) {
@@ -1778,6 +1808,7 @@ static void picture_dummy(c6502_u32 *r)
         blit_packed_row(screen, x0, (c6502_u8)(y0 + index),
             (c6502_u8)(x1 - x0 + 1u), c6502_resource_scratch + index * stride);
     }
+    NATIVE_LINEAR_END();
 }
 
 /* The 9288 font renderer consumes a host-sized two-bit surface, never the
@@ -1832,9 +1863,11 @@ static void native_text(c6502_u8 x, c6502_u8 y,
             if (y > 80u) break;
         }
         rows = native_glyph(glyph, width);
+        NATIVE_LINEAR_BEGIN();
         for (gy = 0u; gy < 16u; ++gy)
             blit_packed_row(0x400u, x, (c6502_u8)(y + gy), width,
                 rows + gy * (width >> 3));
+        NATIVE_LINEAR_END();
         x = (c6502_u8)(x + width);
     }
 }
@@ -1909,6 +1942,7 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
         if (picture_source_disjoint(picture, stride * (y1 - y0 + 1u))) {
             c6502_u8 row[20];
             const c6502_u8 *direct = picture_direct_source(picture, stride * (y1 - y0 + 1u));
+            NATIVE_LINEAR_BEGIN();
             for (y = y0; y <= y1; ++y) {
                 const c6502_u8 *source = direct;
                 if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
@@ -1918,6 +1952,7 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
                 }
                 native_lcd_span(x0 >> 3, x1 >> 3, y, source, 0xffu, 0xffu);
             }
+            NATIVE_LINEAR_END();
             return;
         }
         ++c6502_perf.picture_ordered_calls;
@@ -1942,6 +1977,7 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
         const c6502_u8 *direct;
         stride = ((c6502_u32)x1 - x0 + 8u) >> 3;
         direct = picture_direct_source(picture, stride * (y1 - y0 + 1u));
+        NATIVE_LINEAR_BEGIN();
         for (y = y0; y <= y1; ++y) {
             const c6502_u8 *source = direct;
             if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
@@ -1952,6 +1988,7 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
             blit_packed_row(0x400u, x0, (c6502_u8)y,
                 (c6502_u8)(x1 - x0 + 1u), source);
         }
+        NATIVE_LINEAR_END();
     } else {
         ++c6502_perf.picture_ordered_calls;
         stride = ((c6502_u32)x1 - x0 + 8u) >> 3;
@@ -2024,15 +2061,18 @@ static void long_integer_to_ascii(
 }
 #endif
 
+#include "c6502_native_lcd_services.h"
 #include "c6502_native_query_assets.h"
 
 static void query_box_bitmap(c6502_u8 x, c6502_u8 y, c6502_u8 width,
     c6502_u8 height, const c6502_u8 *image)
 {
     c6502_u32 row, stride = (width + 7u) >> 3;
+    NATIVE_LINEAR_BEGIN();
     for (row = 0u; row < height; ++row)
         blit_packed_row(0x400u, x, (c6502_u8)(y + row), width,
             image + row * stride);
+    NATIVE_LINEAR_END();
 }
 
 static void query_box_buttons(c6502_u8 selection)
@@ -2229,6 +2269,8 @@ static void query_box(c6502_u32 *r)
 {
     query_box_run(r, (c6502_u8)r[4], stack8(r, 0u), stack16(r, 1u));
 }
+
+#include "c6502_native_menu.h"
 
 static void api_graphics(c6502_u32 *r, c6502_u32 id)
 {
@@ -2812,6 +2854,7 @@ static void convert_operand_to_float(
 
 #include "c6502_native_long_shift.h"
 #include "c6502_native_key_checkpoint.h"
+#include "c6502_native_arithmetic16.h"
 
 void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
 {
@@ -2913,17 +2956,18 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         semantic_put16(r, r[12], (c6502_u16)result);
         r[4] = result >> 8; set_nz(r, (c6502_u8)r[4]); return;
     case C6502_BRIDGE_c6502_sem_add16:
+    case C6502_BRIDGE_c6502_sem_sub16:
     case C6502_BRIDGE_c6502_sem_add16_regs:
     case C6502_BRIDGE_c6502_sem_sub16_regs:
-        left16 = semantic_get16(r, r[11]);
-        right16 = id == C6502_BRIDGE_c6502_sem_add16 ?
-            (c6502_u16)r[13] : semantic_get16(r, r[12]);
-        result = id == C6502_BRIDGE_c6502_sem_sub16_regs ?
-            (c6502_u16)(left16 - right16) : (c6502_u16)(left16 + right16);
-        semantic_put16(r,
-            id == C6502_BRIDGE_c6502_sem_add16 ? r[12] : r[13],
-            (c6502_u16)result);
-        r[4] = result >> 8; set_nz(r, (c6502_u8)r[4]); return;
+        semantic_arithmetic16(r,
+            id == C6502_BRIDGE_c6502_sem_sub16 ||
+            id == C6502_BRIDGE_c6502_sem_sub16_regs,
+            id == C6502_BRIDGE_c6502_sem_add16 ||
+            id == C6502_BRIDGE_c6502_sem_sub16, 0); return;
+    case C6502_BRIDGE_c6502_sem_add16_preserve:
+    case C6502_BRIDGE_c6502_sem_sub16_preserve:
+        semantic_arithmetic16(r,
+            id == C6502_BRIDGE_c6502_sem_sub16_preserve, 1, 1); return;
     case C6502_BRIDGE_c6502_sem_load16_indirect:
         address = semantic_get16(r, r[11]) + (c6502_u8)r[13];
         result = guest_read((c6502_u16)address) |
@@ -3158,6 +3202,42 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         c6502_native_state.input_filter = (c6502_u8)r[4]; return;
     case C6502_BRIDGE_c6502_adapter_guisetkbdtype:
         c6502_native_state.keyboard_type = (c6502_u8)r[4]; return;
+#ifdef C6502_NEEDS_c6502_adapter_guimenu
+    case C6502_BRIDGE_c6502_adapter_guimenu:
+        result = native_timing_input_begin();
+        menu_run(r, stack16(r, 0u), stack16(r, 2u));
+        nt_leave(NT_DIALOG, result, native_clock()); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_sysiconscrollbaruparrow
+    case C6502_BRIDGE_c6502_adapter_sysiconscrollbaruparrow:
+        native_icon_arrow(1, (c6502_u8)r[4]); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_sysiconscrollbardownarrow
+    case C6502_BRIDGE_c6502_adapter_sysiconscrollbardownarrow:
+        native_icon_arrow(0, (c6502_u8)r[4]); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_sysiconsetleftscrollbar
+    case C6502_BRIDGE_c6502_adapter_sysiconsetleftscrollbar:
+        native_icon_left_scroll((c6502_u8)r[4]); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_syslcdclear
+    case C6502_BRIDGE_c6502_adapter_syslcdclear:
+        result = nt_enter(native_clock());
+        native_lcd_clear();
+        nt_leave(NT_SHAPE, result, native_clock()); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_syspicturefill_direct
+    case C6502_BRIDGE_c6502_adapter_syspicturefill_direct:
+        result = nt_enter(native_clock());
+        native_picture_fill((c6502_u16)r[0]);
+        nt_leave(NT_PICTURE, result, native_clock()); return;
+#endif
+#ifdef C6502_NEEDS_c6502_adapter_syspicturefill
+    case C6502_BRIDGE_c6502_adapter_syspicturefill:
+        result = nt_enter(native_clock());
+        native_picture_fill(stack16(r, 0u));
+        nt_leave(NT_PICTURE, result, native_clock()); return;
+#endif
     case C6502_BRIDGE_c6502_adapter_guimsgbox:
         result = native_timing_input_begin();
         message_box(r, stack16(r, 0u), stack16(r, 2u));
@@ -3373,6 +3453,40 @@ void c6502_native_bridge_profiled(c6502_u32 *r, c6502_u32 id, c6502_u32 caller)
 }
 #endif
 
+/* The four-argument wrapper is selected only in crash-trace builds. All
+   default fast assembly helpers and inline native game code are untouched. */
+#ifdef C6502_CRASH_TRACE
+void c6502_native_bridge_traced(c6502_u32 *r, c6502_u32 id,
+                                c6502_u32 caller, c6502_u32 host_sp)
+{
+    c6502_u32 checkpoint = id < C6502_BRIDGE_COUNT && c6502_crash_checkpoints[id];
+    nd_current_regs = r; nd_current_id = id;
+    nd_current_caller = caller; nd_current_host_sp = host_sp;
+    nd_service(r, id, caller, host_sp);
+    if (nd_active) {
+        nd_record(ND_ENTER, r, id, caller, host_sp);
+        /* Frequent idle/input queries are kept in RAM and checkpointed at
+           most once per second. Expensive APIs/long arithmetic persist an
+           ENTER before doing the operation, not only on normal exit. */
+        if (checkpoint || native_clock() - nd_last_idle_write >= 256u) {
+            (void)nd_snapshot("before_call");
+            nd_last_idle_write = native_clock();
+        }
+    }
+#ifdef C6502_PROFILE_OTHER
+    c6502_native_bridge_profiled(r, id, caller);
+#else
+    c6502_native_bridge(r, id);
+#endif
+    nd_service(r, id, caller, host_sp);
+    if (nd_active) {
+        nd_record(ND_LEAVE, r, id, caller, host_sp);
+        if (checkpoint) (void)nd_snapshot("after_call");
+    }
+    nd_current_regs = 0;
+}
+#endif
+
 int c6502_native_prepare(void)
 {
     const c6502_u8 *snapshot;
@@ -3466,6 +3580,11 @@ void c6502_native_perf_begin(void)
     c6502_key_bridge_calls = 0u;
     c6502_key_checkpoint_checks = c6502_key_checkpoint_scans = 0u;
     native_capture_keys(); /* Establish launch-key baseline BEFORE game code. */
+#ifdef C6502_CRASH_TRACE
+    nd_reset();
+    nd_service(c6502_entry_regs, 0u, 0u, 0u);
+    nd_indicator();
+#endif
 }
 
 static void native_log_value(FS_FILE *file, const char *name, c6502_u32 value)
@@ -3679,6 +3798,13 @@ void c6502_native_perf_end(void)
     native_log_value(file, "framebuffer_shadow_bytes", sizeof(c6502_t_frame_shadow));
     NATIVE_LOG(framebuffer_audit_words); NATIVE_LOG(framebuffer_repaired_words);
     NATIVE_LOG(t_packed_groups);
+#ifdef C6502_T_FILTER_LINEAR
+    (void)fs_fwrite("display_filter=bilinear_4gray\n", 1,
+        sizeof("display_filter=bilinear_4gray\n") - 1u, file);
+    NATIVE_LOG(linear_rows); NATIVE_LOG(linear_unchanged_spans); NATIVE_LOG(linear_batches);
+#else
+    (void)fs_fwrite("display_filter=nearest\n", 1, 23, file);
+#endif
 #endif
 #ifdef C6502_TARGET_9288S
     native_log_value(file, "touch_events", c6502_s_touch_events);

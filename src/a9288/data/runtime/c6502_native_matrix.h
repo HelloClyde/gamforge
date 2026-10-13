@@ -67,6 +67,9 @@ static void native_matrix_snapshot(c6502_u8 current[8], c6502_u32 now)
     if (physical[6] & 32u) current[7] |= 8u;   /* Up */
     if (physical[4] & 16u) current[0] |= 64u;  /* Escape */
     if (physical[5] & 16u) current[1] |= 64u;  /* Enter */
+#ifdef C6502_CRASH_TRACE
+    if (physical[4] & 4u) current[2] |= 4u; /* D, debugger only; not a game key. */
+#endif
     (void)now;
 #else
     for (row = 0u; row < 8u; ++row)

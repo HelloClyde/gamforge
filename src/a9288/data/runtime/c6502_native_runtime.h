@@ -7,6 +7,8 @@ typedef unsigned char c6502_u8;
 typedef unsigned short c6502_u16;
 typedef unsigned long c6502_u32;
 
+#include "c6502_native_lifecycle.h"
+
 typedef struct C6502_NativeState {
     c6502_u8 *ram;
     c6502_u8 *game;

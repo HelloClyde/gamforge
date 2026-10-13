@@ -55,6 +55,9 @@ static void native_key_gap(c6502_u32 now, c6502_u32 gap, c6502_u8 row7)
 }
 
 static void native_queue_key(c6502_u8 code, int repeat);
+#ifdef C6502_CRASH_TRACE
+static void nd_key_snapshot(const c6502_u8 current[8]);
+#endif
 
 static void native_action_snapshot(c6502_u8 held, c6502_u32 now)
 {
@@ -139,6 +142,9 @@ static void native_key_snapshot(const c6502_u8 current[8], c6502_u32 now)
     c6502_key_previous_bridge = c6502_key_bridge_id;
     c6502_key_scan_tick = now;
     ++c6502_perf.key_scans;
+#ifdef C6502_CRASH_TRACE
+    nd_key_snapshot(current); /* Request only, never filesystem I/O here. */
+#endif
     /* Both physical Exit aliases belong to one logical action key. */
     native_action_snapshot((c6502_u8)(
         (((current[0] | current[5]) & 64u) ? 1u : 0u) |
@@ -148,6 +154,9 @@ static void native_key_snapshot(const c6502_u8 current[8], c6502_u32 now)
         c6502_u8 pressed = current[row] & ~c6502_key_previous[row];
         for (column = 0u; column < 7u; ++column) {
             c6502_u8 code = key_map[row][column];
+#ifdef C6502_CRASH_TRACE
+            if (row == 2u && column == 2u) continue; /* Reserved physical D. */
+#endif
             if (code == 0xffu) continue;
             if ((current[row] & (1u << column)) &&
                 (code == 0x35u || (code >= 0x37u && code <= 0x39u))) held = code;

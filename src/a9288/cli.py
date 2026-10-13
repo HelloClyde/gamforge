@@ -39,7 +39,7 @@ def publish_file(source: Path, destination: Path) -> None:
 
 
 def convert(args) -> None:
-    from a9288.targets import display_geometry, display_scale, target_profile
+    from a9288.targets import display_filter, display_geometry, display_scale, target_profile
 
     target = getattr(args, "target", "9288").lower()
     profile = target_profile(target)
@@ -56,7 +56,7 @@ def convert(args) -> None:
             flush=True,
         )
     game = args.game.resolve()
-    inspect_game(game)
+    game_info = inspect_game(game)
     name = args.app_name if args.app_name is not None else default_app_name(game.stem)
     encode_app_name(name)
     sdk = args.sdk.resolve()
@@ -95,6 +95,13 @@ def convert(args) -> None:
         command += ["--icon", str(args.icon.resolve())]
     if getattr(args, "profile_other", False):
         command.append("--profile-other")
+    crash_trace = bool(
+        getattr(args, "crash_trace", False) or getattr(args, "trace_on_start", False)
+    )
+    if crash_trace:
+        command.append("--crash-trace")
+    if getattr(args, "trace_on_start", False):
+        command.append("--trace-on-start")
     external = bool(getattr(args, "external_resources", False))
     if external:
         command.append("--external-resources")
@@ -116,6 +123,8 @@ def convert(args) -> None:
             "output_kf2_bytes": size,
             "output_kf2_sha256": digest,
             "app_name": name,
+            "game_entry_pc": game_info["entry"],
+            "native_entry_offset": game_info["entry"] - 0x5000,
             "app_name_encoding": "gbk",
             "app_category": "game" if target == "tsw600" else "entertainment",
             "app_category_label": profile.category,
@@ -132,6 +141,9 @@ def convert(args) -> None:
             "bridge_contract": "explicit-native-case-required",
             "host_sdk_abi": f"{'9288s' if target in TOUCH_TARGETS else target}-gnu33-r6-r9-return-r4-reserved-r15",
             "profile_other": bool(getattr(args, "profile_other", False)),
+            "crash_trace": crash_trace,
+            "trace_on_start": bool(getattr(args, "trace_on_start", False)),
+            "crash_trace_logs": ["A:\\GAMDBG0.LOG", "A:\\GAMDBG1.LOG"] if crash_trace else [],
             "output_elf": str(output.with_suffix(".elf")),
             "output_map": str(output.with_suffix(".map")),
             "sdk": str(sdk),
@@ -140,6 +152,7 @@ def convert(args) -> None:
             "screen_width": profile.width,
             "screen_height": profile.height,
             "display_scale": scale,
+            "display_filter": display_filter(scale),
             "display_width": view_width,
             "display_height": view_height,
             "display_x": view_x,
@@ -168,6 +181,11 @@ def convert(args) -> None:
         # publication never makes the old EXE refer to a replaced resource.
         publish_file(resource, destination)
     staged_report = staged.with_suffix(".report.json")
+    if crash_trace:
+        debug_symbols = json.loads(
+            staged.with_suffix(".debug-symbols.json").read_text(encoding="utf-8")
+        )
+        report["trace_build_id"] = debug_symbols["build_id"]
     staged_report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -177,6 +195,14 @@ def convert(args) -> None:
     if getattr(args, "profile_other", False):
         publish_file(
             staged.with_suffix(".profile-symbols.json"), output.with_suffix(".profile-symbols.json")
+        )
+    if crash_trace:
+        publish_file(
+            staged.with_suffix(".debug-symbols.json"), output.with_suffix(".debug-symbols.json")
+        )
+        print(
+            "崩溃追踪：按 D 开关；触屏机型点画面右上角 D。日志为 A:\\GAMDBG0.LOG 和 GAMDBG1.LOG。",
+            flush=True,
         )
     print(f"{profile.executable_format}: {output} ({size} bytes)\nSHA256: {digest}", flush=True)
     print(f"report: {output.with_suffix('.report.json')}", flush=True)
@@ -188,8 +214,8 @@ def main() -> None:
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
     parser.add_argument(
         "--display-scale",
-        choices=("1x", "1.5x", "2x"),
-        help="9288T defaults to 1x pixel-perfect; optional 1.5x. 9288 uses 2x.",
+        choices=("1x", "1.5x", "1.5x-linear", "2x"),
+        help="9288T: 1x, 1.5x nearest or 1.5x-linear four-gray bilinear. 9288: 2x.",
     )
     parser.add_argument("--sdk", type=Path, default=DEFAULT_SDK)
     parser.add_argument("--toolchain", type=Path, default=DEFAULT_TOOLCHAIN)
@@ -202,6 +228,14 @@ def main() -> None:
         help="添加原生调用区间及运行库抽样耗时日志（诊断版）",
     )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
+    parser.add_argument(
+        "--crash-trace",
+        action="store_true",
+        help="包含按需崩溃追踪；运行中按 D 开关，关键调用前后落盘（会减速）",
+    )
+    parser.add_argument(
+        "--trace-on-start", action="store_true", help="从游戏启动就开启崩溃追踪，隐含 --crash-trace"
+    )
     parser.add_argument(
         "--external-resources",
         action="store_true",

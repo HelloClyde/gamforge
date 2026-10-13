@@ -28,7 +28,14 @@ def test_compiled_lcd_stores_cannot_bypass_mirror(tmp_path):
 
 @pytest.mark.parametrize(
     "target,scale",
-    [("9288", "2x"), ("9288t", "1x"), ("9288t", "1.5x"), ("9288s", "1x"), ("tsw600", "1x")],
+    [
+        ("9288", "2x"),
+        ("9288t", "1x"),
+        ("9288t", "1.5x"),
+        ("9288t", "1.5x-linear"),
+        ("9288s", "1x"),
+        ("tsw600", "1x"),
+    ],
 )
 def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, target, scale):
     cc = shutil.which("gcc")
@@ -102,6 +109,23 @@ static const unsigned char* native_glyph(const unsigned char*g,unsigned char wid
         + r"""
 static void reference(void){
  memset(expected,255,sizeof(expected));
+#ifdef C6502_T_FILTER_LINEAR
+ /* Independent 4-tap scalar oracle. Pixel-center rational coordinates,
+    clamp visible source edges, round once to the four physical levels. */
+ for(unsigned y=0;y<144;++y)for(unsigned x=0;x<239;++x){
+  int nx=(int)x*4-1,ny=(int)y*4-1;
+  unsigned sx=nx<0?0:(unsigned)nx/6,sy=ny<0?0:(unsigned)ny/6;
+  unsigned wx=nx<0?0:(unsigned)nx%6,wy=ny<0?0:(unsigned)ny%6;
+  unsigned tx=sx<158?sx+1:sx,ty=sy<95?sy+1:sy;
+  unsigned a=(ram[lcd_address(sx/8,sy)]&(128>>(sx&7)))?0:3;
+  unsigned b=(ram[lcd_address(tx/8,sy)]&(128>>(tx&7)))?0:3;
+  unsigned c=(ram[lcd_address(sx/8,ty)]&(128>>(sx&7)))?0:3;
+  unsigned d=(ram[lcd_address(tx/8,ty)]&(128>>(tx&7)))?0:3;
+  unsigned v=(a*(6-wx)*(6-wy)+b*wx*(6-wy)+c*(6-wx)*wy+d*wx*wy+18)/36;
+  unsigned at=(y+8)*60+x/4,shift=6-2*(x%4);
+  expected[at]=(expected[at]&~(3<<shift))|(v<<shift);
+ }
+#else
  for(unsigned y=0;y<96;++y)for(unsigned x=0;x<159;++x){
   unsigned bit=ram[lcd_address(x/8,y)]&(128>>(x%8));
 #ifdef C6502_HOST_PACKED_1X
@@ -117,6 +141,7 @@ static void reference(void){
 #endif
    expected[yy*C6502_FRAME_STRIDE+xx/4]&=~(3<<(6-2*(xx%4)));
  }
+#endif
 #ifdef C6502_TARGET_9288S
  native_s_keyboard_paint(expected);
 #endif
@@ -205,7 +230,12 @@ static void differential_pictures(void){
  unsigned rows=c6502_perf.lcd_span_rows,ordered=c6502_perf.picture_ordered_calls;
  native_picture(0,0,158,95,0x4800,0);
  assert(!memcmp(ram,oracle,sizeof(ram)));reference();
- assert(c6502_perf.mapped_lcd_bytes-stores==1920&&c6502_perf.framebuffer_bytes-bytes==FULL_FRAME_WRITE_BYTES);
+ assert(c6502_perf.mapped_lcd_bytes-stores==1920);
+#ifdef C6502_T_FILTER_LINEAR
+ assert(c6502_perf.framebuffer_bytes-bytes<=17160); /* local vertical dependencies */
+#else
+ assert(c6502_perf.framebuffer_bytes-bytes==FULL_FRAME_WRITE_BYTES);
+#endif
  assert(c6502_perf.lcd_span_rows-rows==96&&c6502_perf.picture_ordered_calls==ordered);
 }
 int main(void){
@@ -254,7 +284,13 @@ int main(void){
  unsigned stores=c6502_perf.mapped_lcd_bytes,bytes=c6502_perf.framebuffer_bytes;
  native_picture(16,8,31,23,0x3000,0);reference();
  assert(c6502_perf.mapped_lcd_bytes-stores==32);
- assert(c6502_perf.framebuffer_bytes-bytes==TILE_WRITE_BYTES && c6502_perf.presents==presents);
+#ifdef C6502_T_FILTER_LINEAR
+ assert(c6502_perf.framebuffer_bytes-bytes>0 && c6502_perf.framebuffer_bytes-bytes<=384);
+ assert(native_linear_depth==0 && c6502_perf.linear_batches==1);
+#else
+ assert(c6502_perf.framebuffer_bytes-bytes==TILE_WRITE_BYTES);
+#endif
+ assert(c6502_perf.presents==presents);
  assert(c6502_perf.lcd_span_rows==16 && c6502_perf.picture_direct_bytes==32);
  /* Masked/unaligned pictures, reverse coordinates, both firmware flags. */
  for(unsigned flag=0;flag<2;++flag)for(unsigned y=0;y<96;y+=5){
@@ -269,7 +305,12 @@ int main(void){
  for(unsigned i=0;i<8;++i){
   memset(ram+0x3000,31*i,1920);bytes=c6502_perf.framebuffer_bytes;
   native_picture(0,0,158,95,0x3000,0);reference();
+#ifdef C6502_T_FILTER_LINEAR
+  assert(c6502_perf.framebuffer_bytes-bytes<=17160);
+  assert(native_linear_depth==0);
+#else
   assert(c6502_perf.framebuffer_bytes-bytes==FULL_FRAME_WRITE_BYTES);
+#endif
  }
  for(unsigned op=0;op<3;++op){horizontal_span(3,154,65,op);reference();}
  line(10,10,37,63);reference();rectangle(0,0,158,95,0);reference();rectangle_clear(0,0,158,95);reference();
@@ -304,8 +345,10 @@ int main(void){
         source = "#define C6502_TARGET_9288T 1\n" + source
     elif target in ("9288s", "tsw600"):
         source = "#define C6502_TARGET_9288S 1\n" + source
-    if scale == "1.5x":
+    if scale in ("1.5x", "1.5x-linear"):
         source = "#define C6502_T_SCALE_1_5 1\n" + source
+    if scale == "1.5x-linear":
+        source = "#define C6502_T_FILTER_LINEAR 1\n" + source
     definitions, source = source.split("#include <assert.h>", 1)
     source = (
         definitions
@@ -319,4 +362,4 @@ int main(void){
     subprocess.run(
         [cc, "-O2", "-Wall", "-I", str(DATA / "runtime"), str(c), "-o", str(exe)], check=True
     )
-    subprocess.run([str(exe)], check=True, timeout=30)
+    subprocess.run([str(exe)], check=True, timeout=90 if scale == "1.5x-linear" else 30)

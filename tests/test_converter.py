@@ -208,6 +208,8 @@ class NativeConverterTest(unittest.TestCase):
         self.assertEqual(args.output.read_bytes(), b"new-valid-artifact")
         result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
         self.assertEqual(result["app_name"], "魔塔")
+        self.assertEqual(result["game_entry_pc"], 0x5046)
+        self.assertEqual(result["native_entry_offset"], 0x46)
         self.assertFalse(result["runtime_interpreter_fallback"])
 
     def test_9288t_report_and_worker_target(self):
@@ -228,9 +230,52 @@ class NativeConverterTest(unittest.TestCase):
         self.assertEqual(result["target"], "9288t")
         self.assertEqual((result["screen_width"], result["screen_height"]), (240, 160))
         self.assertEqual(result["display_scale"], "1x")
+        self.assertEqual(result["display_filter"], "nearest")
         self.assertEqual((result["display_width"], result["display_height"]), (159, 96))
         self.assertEqual((result["display_x"], result["display_y"]), (40, 32))
         self.assertEqual(command[command.index("--display-scale") + 1], "1x")
+
+    def test_9288t_linear_filter_report_and_worker_option(self):
+        args = self.args()
+        args.target = "9288T"
+        args.display_scale = "1.5x-linear"
+        stage = args.work_dir / "native-result/program.exe"
+        stage.parent.mkdir(parents=True)
+        for suffix in (".exe", ".elf", ".map"):
+            stage.with_suffix(suffix).write_bytes(b"new-valid-artifact")
+        report = args.work_dir / "c6502-s1c33-direct/report.json"
+        report.parent.mkdir()
+        report.write_text("{}")
+        with patch.object(driver.subprocess, "run") as run:
+            driver.convert(args)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--display-scale") + 1], "1.5x-linear")
+        result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["display_filter"], "bilinear-4gray")
+        self.assertEqual(result["display_scale"], "1.5x-linear")
+        self.assertEqual((result["display_width"], result["display_height"]), (239, 144))
+        self.assertEqual((result["display_x"], result["display_y"]), (0, 8))
+
+    def test_trace_option_and_symbols_are_published(self):
+        args = self.args()
+        args.trace_on_start = True  # Implies inclusion even without crash_trace.
+        stage = args.work_dir / "native-result/program.exe"
+        stage.parent.mkdir(parents=True)
+        for suffix in (".exe", ".elf", ".map"):
+            stage.with_suffix(suffix).write_bytes(b"new-valid-artifact")
+        stage.with_suffix(".debug-symbols.json").write_text('{"build_id":"test-build"}')
+        report = args.work_dir / "c6502-s1c33-direct/report.json"
+        report.parent.mkdir()
+        report.write_text("{}")
+        with patch.object(driver.subprocess, "run") as run:
+            driver.convert(args)
+        self.assertIn("--crash-trace", run.call_args.args[0])
+        self.assertIn("--trace-on-start", run.call_args.args[0])
+        result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
+        self.assertTrue(result["crash_trace"] and result["trace_on_start"])
+        self.assertEqual(result["trace_build_id"], "test-build")
+        self.assertEqual(result["crash_trace_logs"], ["A:\\GAMDBG0.LOG", "A:\\GAMDBG1.LOG"])
+        self.assertTrue(args.output.with_suffix(".debug-symbols.json").is_file())
 
     def test_atomic_copy_failure_leaves_destination(self):
         source = self.folder / "source"

@@ -39,7 +39,15 @@ TARGETS = {
 }
 
 TOUCH_TARGETS = ("9288s", "tsw600")
-DISPLAY_SCALES = {"9288": ("2x",), "9288t": ("1x", "1.5x"), **{t: ("1x",) for t in TOUCH_TARGETS}}
+DISPLAY_SCALES = {
+    "9288": ("2x",),
+    "9288t": ("1x", "1.5x", "1.5x-linear"),
+    **{t: ("1x",) for t in TOUCH_TARGETS},
+}
+
+
+def display_filter(scale: str) -> str:
+    return "bilinear-4gray" if scale == "1.5x-linear" else "nearest"
 
 
 def target_profile(name: str) -> Target:
@@ -64,4 +72,9 @@ def display_geometry(target: str, requested: str | None = None) -> tuple[int, in
     if target.lower() in TOUCH_TARGETS:
         # Centre in the upper 120 lines, reserving the lower 120 for keys.
         return 159, 96, 0, 12
-    return {"1x": (159, 96, 40, 32), "1.5x": (239, 144, 0, 8), "2x": (318, 192, 1, 24)}[scale]
+    return {
+        "1x": (159, 96, 40, 32),
+        "1.5x": (239, 144, 0, 8),
+        "1.5x-linear": (239, 144, 0, 8),
+        "2x": (318, 192, 1, 24),
+    }[scale]

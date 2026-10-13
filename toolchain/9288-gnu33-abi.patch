@@ -133,3 +133,18 @@ diff --git a/llvm/lib/Target/S1C33/S1C33DelaySlotFiller.cpp b/llvm/lib/Target/S1
      return false;
    // Reject instructions larger than 2 bytes (ext-prefixed instructions).
    // All standard 16-bit S1C33 instructions have Size==0 (default); only
+diff --git a/llvm/lib/Target/S1C33/S1C33InstrInfo.td b/llvm/lib/Target/S1C33/S1C33InstrInfo.td
+--- a/llvm/lib/Target/S1C33/S1C33InstrInfo.td
++++ b/llvm/lib/Target/S1C33/S1C33InstrInfo.td
+@@ -1357,6 +1357,11 @@
+ // Used when a frame slot address must appear as a data value (e.g. sret pointer).
+ def ADJFI : S1C33Pseudo<(outs GR32:$dst), (ins i32imm:$fi),
+     "# ADJFI $dst, $fi", []> {
++  // Frame-index elimination emits LD SP followed by ADD, which changes
++  // PSR. Model this before scheduling: ADJFI must not be inserted between
++  // a comparison and the branch consuming its flags (unaligned blit fault).
++  let Uses = [SP];
++  let Defs = [PSR];
+   let SchedRW = [WriteALU];
+ }
+ 

@@ -237,6 +237,22 @@ class StaticNativeCompilerTest(unittest.TestCase):
                 output,
             )
 
+    def test_native_builder_uses_the_gam_header_entry(self) -> None:
+        output = ROOT / "build" / "tests" / "native-custom-entry"
+        output.mkdir(parents=True, exist_ok=True)
+        for offset in (0x46, 0x47, 0x123):
+            with self.subTest(offset=offset):
+                _, assembly = native_builder.generate_bridges([], output, entry_offset=offset)
+                text = assembly.read_text(encoding="utf-8")
+                symbol = f"c6502_game_fn_{offset:05x}"
+                self.assertIn(f"    .extern {symbol}", text)
+                self.assertIn(f"    call {symbol}", text)
+                if offset != 0x46:
+                    self.assertNotIn("c6502_game_fn_00046", text)
+        for offset in (-1, 0x45, 0x4000):
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                native_builder.generate_bridges([], output, entry_offset=offset)
+
     def test_native_bridge_ids_are_stable_across_game_subsets(self) -> None:
         output = ROOT / "build" / "tests" / "native-stable-bridge-ids"
         output.mkdir(parents=True, exist_ok=True)

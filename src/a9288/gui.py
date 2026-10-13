@@ -64,6 +64,8 @@ class Conversion:
     external_resources: bool = False
     target: str = "9288"
     display_scale: str | None = None
+    crash_trace: bool = False
+    trace_on_start: bool = False
 
     def validate(self):
         inspect_game(self.game)
@@ -118,6 +120,10 @@ class Conversion:
             command += ["--icon", str(self.icon)]
         if self.external_resources:
             command.append("--external-resources")
+        if self.crash_trace or self.trace_on_start:
+            command.append("--crash-trace")
+        if self.trace_on_start:
+            command.append("--trace-on-start")
         return command
 
 
@@ -268,6 +274,8 @@ class ConverterApp:
         self.external_resources = tk.BooleanVar(
             value=bool(settings.get("external_resources", False))
         )
+        self.crash_trace = tk.BooleanVar(value=bool(settings.get("crash_trace", False)))
+        self.trace_on_start = tk.BooleanVar(value=bool(settings.get("trace_on_start", False)))
         self.inputs = []
         self._style()
         self._layout()
@@ -407,7 +415,7 @@ class ConverterApp:
             textvariable=self.target_display,
             values=tuple(profile.name for profile in TARGETS.values()),
             state="readonly",
-            width=12,
+            width=16,
         )
         target.bind("<<ComboboxSelected>>", lambda _: self._select_target())
         target.grid(row=11, column=1, sticky="e", pady=(12, 0))
@@ -418,13 +426,26 @@ class ConverterApp:
             textvariable=self.display_scale,
             values=DISPLAY_SCALES[self.target.get()],
             state="readonly" if self.target.get() == "9288t" else "disabled",
-            width=12,
+            width=16,
         )
         self.scale_combo.grid(row=12, column=1, sticky="e", pady=(9, 0))
         self.inputs.append(self.scale_combo)
         self.target_hint = self.label(left, "", 9, color=MUTED)
         self.target_hint.grid(row=13, column=0, columnspan=2, sticky="w", pady=(5, 0))
         self._scale_changed()
+        debug = ttk.Checkbutton(
+            left, text="包含崩溃追踪（游戏中按 D 开关）", variable=self.crash_trace
+        )
+        debug.grid(row=14, column=0, columnspan=2, sticky="w", pady=(9, 0))
+        self.inputs.append(debug)
+        debug_start = ttk.Checkbutton(
+            left, text="从启动就开启追踪（会明显减速）", variable=self.trace_on_start
+        )
+        debug_start.grid(row=15, column=0, columnspan=2, sticky="w")
+        self.inputs.append(debug_start)
+        self.label(left, "触屏机型：点右上角 D；重启后保留 GAMDBG0/1.LOG。", 9, color=MUTED).grid(
+            row=16, column=0, columnspan=2, sticky="w", pady=(3, 0)
+        )
         right = self.card(content)
         right.grid(row=0, column=1, sticky="nsew")
         right.configure(width=285)
@@ -647,7 +668,13 @@ class ConverterApp:
         width, height, _, _ = display_geometry(target, scale)
         self.target_hint.configure(
             text=f"{profile.width} × {profile.height} · {width} × {height} · {scale}"
-            + (" 点对点居中" if scale == "1x" else " 最近邻放大")
+            + (
+                " 点对点居中"
+                if scale == "1x"
+                else " 四灰阶双线性放大"
+                if scale == "1.5x-linear"
+                else " 最近邻放大"
+            )
             + (" · 上屏游戏 / 下屏软键盘" if target in TOUCH_TARGETS else "")
             + (" · 真机待验证" if target != "9288" else "")
         )
@@ -731,6 +758,8 @@ class ConverterApp:
                 external_resources=self.external_resources.get(),
                 target=self.target.get(),
                 display_scale=self.display_scale.get(),
+                crash_trace=self.crash_trace.get(),
+                trace_on_start=self.trace_on_start.get(),
             )
             config.validate()
         except Exception as exc:
@@ -767,6 +796,8 @@ class ConverterApp:
                         rom8=self.rom8.get(),
                         rome=self.rome.get(),
                         external_resources=self.external_resources.get(),
+                        crash_trace=self.crash_trace.get(),
+                        trace_on_start=self.trace_on_start.get(),
                     ),
                     ensure_ascii=False,
                 ),

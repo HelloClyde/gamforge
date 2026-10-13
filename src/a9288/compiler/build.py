@@ -10,7 +10,13 @@ import re
 import subprocess
 from pathlib import Path
 
-from a9288.app_options import c_name_definition, default_app_name, encode_app_name, write_icons
+from a9288.app_options import (
+    c_name_definition,
+    default_app_name,
+    encode_app_name,
+    inspect_game,
+    write_icons,
+)
 from a9288.compiler import kf2 as build_9288
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.compiler.fast_helpers import fast_helper
@@ -115,7 +121,12 @@ def generate_bridges(
     output: Path,
     profile_other: bool = False,
     external_resources: bool = False,
+    crash_trace: bool = False,
+    entry_offset: int = 0x46,
 ) -> tuple[Path, Path]:
+    if not 0x46 <= entry_offset < 0x4000:
+        raise ValueError("native entry must be a GAM header code-bank offset")
+    entry_symbol = f"c6502_game_fn_{entry_offset:05x}"
     unsupported = sorted(set(symbols) - set(SUPPORTED_BRIDGES))
     if unsupported:
         raise ValueError(
@@ -138,10 +149,36 @@ def generate_bridges(
         if symbol in bridge_ids:
             enum_lines.append(f"#define C6502_NEEDS_{symbol} 1")
     enum_lines.append(f"#define C6502_BRIDGE_COUNT {len(bridge_ids) + 1}u")
-    if profile_other:
+    if profile_other or crash_trace:
         enum_lines.append("static const char *const c6502_profile_names[] = {")
         enum_lines.append('    "session",')
         enum_lines.extend(f'    "{symbol}",' for symbol in bridge_ids)
+        enum_lines.append("};")
+    if crash_trace:
+        # Persist expensive API/arithmetic boundaries, not every byte access
+        # or idle key poll. All full C bridges still enter the RAM history.
+        quiet = {
+            "sysgetkey",
+            "syskeyread",
+            "guigetmsg",
+            "guitranslatemsg",
+            "guigetkbdstate",
+            "sysgettimer1number",
+            "sysrand",
+            "sysrand_direct",
+        }
+        enum_lines.append("static const unsigned char c6502_crash_checkpoints[] = {")
+        enum_lines.append("    0,")
+        for symbol in bridge_ids:
+            checkpoint = (
+                (
+                    symbol.startswith("c6502_adapter_")
+                    and symbol.removeprefix("c6502_adapter_") not in quiet
+                )
+                or "long" in symbol
+                or "float" in symbol
+            )
+            enum_lines.append(f"    {int(checkpoint)}, /* {symbol} */")
         enum_lines.append("};")
     enum_lines.extend(["#endif", ""])
     header.write_text("\n".join(enum_lines), encoding="utf-8")
@@ -153,7 +190,7 @@ def generate_bridges(
         "    .extern c6502_bridge_target",
         "    .extern c6502_host_dp",
         "    .extern c6502_native_bridge",
-        "    .extern c6502_game_fn_00046",
+        f"    .extern {entry_symbol}",
         "",
     ]
 
@@ -173,11 +210,16 @@ def generate_bridges(
                 body.append(f"    ext {register * 4}")
             body.append(f"    ld.w [%r3], %r{register}")
         body += ["    ld.w %r11, [%sp+0]", "    ext 12", "    ld.w [%r3], %r11"]
-        if profile_other:
-            # R8 has already been saved. Before PUSHN, SP+4 is the native
-            # return PC (SP+0 contains original R3). Never guess a C frame
+        if profile_other or crash_trace:
+            # R8 has already been saved. Before PUSHN, SP+4 (word slots,
+            # i.e. 16 bytes) is the native return PC. SP+0 contains R3.
+            # Never guess a C frame
             # layout or scan arbitrary stack memory for return addresses.
             body.append("    ld.w %r8, [%sp+4]")
+        if crash_trace:
+            # Fourth GNU33 argument: SP at the bridge's public entry,
+            # containing its actual native caller return PC. R9 is saved.
+            body.extend(["    ld.w %r9, %sp", "    add %r9, 16"])
         body.append("    pushn %r3")
         low = ident & 0x3F
         shown_low = low if low < 32 else low - 64
@@ -190,7 +232,9 @@ def generate_bridges(
         # Interrupts remain enabled in the native app. R15 MUST keep the
         # firmware DP even between C calls; it is not a guest scratch reg.
         body.append(
-            "    call c6502_native_bridge_profiled"
+            "    call c6502_native_bridge_traced"
+            if crash_trace
+            else "    call c6502_native_bridge_profiled"
             if profile_other
             else "    call c6502_native_bridge"
         )
@@ -361,7 +405,7 @@ def generate_bridges(
     for register in range(4, 15):
         lines.append(f"    ext {register * 4}")
         lines.append(f"    ld.w %r{register}, [%r0]")
-    lines.append("    call c6502_game_fn_00046")
+    lines.append(f"    call {entry_symbol}")
     if external_resources:
         # On resource failure unwind only the native game to the saved C
         # entry. Never return fabricated bytes to continuing game code.
@@ -395,7 +439,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
-    parser.add_argument("--display-scale", choices=("1x", "1.5x", "2x"))
+    parser.add_argument("--display-scale", choices=("1x", "1.5x", "1.5x-linear", "2x"))
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -408,9 +452,12 @@ def main() -> None:
     )
     parser.add_argument("--work-dir", type=Path, default=WORK / "cli")
     parser.add_argument("--external-resources", action="store_true")
+    parser.add_argument("--crash-trace", action="store_true")
+    parser.add_argument("--trace-on-start", action="store_true")
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
     args = parser.parse_args()
+    args.crash_trace = args.crash_trace or args.trace_on_start
 
     app_name = args.app_name if args.app_name is not None else default_app_name(args.game.stem)
     name_bytes = encode_app_name(app_name)
@@ -429,6 +476,7 @@ def main() -> None:
     runtime_build.mkdir(parents=True, exist_ok=True)
     build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include, target=args.target)
     config = runtime_build / "c6502_native_app_config.h"
+    trace_build_id = None
     config.write_text(c_name_definition(app_name), encoding="ascii")
     resource = None
     if args.external_resources:
@@ -437,6 +485,39 @@ def main() -> None:
             c_name_definition(app_name) + c_resource_config(resource_name, resource[: HEADER.size]),
             encoding="ascii",
         )
+    if args.crash_trace:
+        # Do not decode addresses with symbols from another build of the
+        # same GAM. Embedding the final EXE hash in itself is circular.
+        identity = hashlib.sha256()
+        identity.update(config.read_bytes())
+        identity.update(
+            json.dumps(
+                {
+                    "target": args.target,
+                    "scale": scale,
+                    "profile": args.profile_other,
+                    "startup": args.trace_on_start,
+                    "external": args.external_resources,
+                },
+                sort_keys=True,
+            ).encode("ascii")
+        )
+        identity.update(subprocess.check_output([clang, "--version"]))
+        sources = sorted(Path(__file__).parent.glob("*.py"))
+        sources += sorted(path for path in (DATA / "runtime").rglob("*") if path.is_file())
+        sources += sorted(path for path in sdk_include.rglob("*") if path.is_file())
+        for path in sources:
+            identity.update(path.name.encode("utf-8"))
+            identity.update(path.read_bytes())
+        for path in (args.game, args.rom8, args.rome):
+            identity.update(path.read_bytes())
+        trace_build_id = identity.hexdigest()
+        with config.open("a", encoding="ascii") as file:
+            digest = hashlib.sha256(args.game.read_bytes()).hexdigest()
+            file.write(f'#define C6502_TRACE_GAME_SHA256 "{digest}"\n')
+            file.write(f'#define C6502_TRACE_TARGET "{args.target}"\n')
+            file.write(f'#define C6502_TRACE_BUILD_ID "{trace_build_id}"\n')
+            file.write(f"#define C6502_TRACE_ON_START {int(args.trace_on_start)}u\n")
     icons = runtime_build / "icons"
     write_icons(icons, args.icon, target=args.target)
 
@@ -470,7 +551,12 @@ def main() -> None:
             "before linking; no silent no-op/fallback is permitted."
         )
     header, bridge_s = generate_bridges(
-        external, runtime_build, args.profile_other, args.external_resources
+        external,
+        runtime_build,
+        args.profile_other,
+        args.external_resources,
+        args.crash_trace,
+        entry_offset=inspect_game(args.game)["entry"] - 0x5000,
     )
     print("[GAM9288_STAGE] runtime|编译公共运行库与程序元数据", flush=True)
 
@@ -503,12 +589,16 @@ def main() -> None:
     objects = [combined]
     if args.target == "9288t":
         flags.append("-DC6502_TARGET_9288T=1")
-        if scale == "1.5x":
+        if scale in ("1.5x", "1.5x-linear"):
             flags.append("-DC6502_T_SCALE_1_5=1")
+        if scale == "1.5x-linear":
+            flags.append("-DC6502_T_FILTER_LINEAR=1")
     elif args.target in TOUCH_TARGETS:
         flags.append("-DC6502_TARGET_9288S=1")
     if args.profile_other:
         flags.append("-DC6502_PROFILE_OTHER=1")
+    if args.crash_trace:
+        flags.append("-DC6502_CRASH_TRACE=1")
     for source in (
         DATA / "runtime" / "c6502_native_9288_start.c",
         DATA / "runtime" / "c6502_native_9288.c",
@@ -517,12 +607,14 @@ def main() -> None:
         bridge_s,
     ):
         obj = runtime_build / (source.stem + ".o")
-        if args.target == "9288t" and source.suffix == ".c":
+        if source.suffix == ".c":
             assembly = runtime_build / (source.stem + ".S")
             run([clang, *flags, "-S", str(source), "-o", str(assembly)])
-            text, guarded = preserve_comparison_flags(assembly.read_text(encoding="utf-8"))
+            text, guarded = preserve_comparison_flags(
+                assembly.read_text(encoding="utf-8"), protect_loads=args.target == "9288t"
+            )
             assembly.write_text(text, encoding="utf-8")
-            print(f"9288T preview PSR compatibility: {source.name}, {guarded} loads", flush=True)
+            print(f"S1C33 comparison flag guards: {source.name}, {guarded} repairs", flush=True)
             run([clang, "--target=s1c33-none-elf", "-c", str(assembly), "-o", str(obj)])
         else:
             run([clang, *flags, "-c", str(source), "-o", str(obj)])
@@ -567,7 +659,7 @@ def main() -> None:
     if resource is not None:
         (args.output.parent / resource_name).write_bytes(resource)
     digest = hashlib.sha256(app).hexdigest()
-    if args.profile_other:
+    if args.profile_other or args.crash_trace:
         symbols = []
         symbol_text = subprocess.check_output([readelf, "-s", str(elf)], text=True)
         for line in symbol_text.splitlines():
@@ -578,18 +670,25 @@ def main() -> None:
                 symbols.append(
                     {"address": int(match[1], 16), "size": int(match[2]), "name": match[3]}
                 )
-        args.output.with_suffix(".profile-symbols.json").write_text(
+        suffix = ".debug-symbols.json" if args.crash_trace else ".profile-symbols.json"
+        args.output.with_suffix(suffix).write_text(
             json.dumps(
                 {
-                    "build": "OTHER-PROFILE-1",
+                    "build": "CRASH-TRACE-1" if args.crash_trace else "OTHER-PROFILE-1",
+                    "build_id": trace_build_id,
                     "exe_sha256": digest,
                     "game_sha256": hashlib.sha256(args.game.read_bytes()).hexdigest(),
+                    "bridge_names": {str(i): name for i, name in enumerate(SUPPORTED_BRIDGES, 1)},
                     "symbols": sorted(symbols, key=lambda item: item["address"]),
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
+        if args.crash_trace and args.profile_other:
+            args.output.with_suffix(".profile-symbols.json").write_bytes(
+                args.output.with_suffix(suffix).read_bytes()
+            )
     print(f"{profile.executable_format}: {args.output.resolve()} ({len(app)} bytes)")
     print(f"SHA256: {digest}")
     print(f"guest external bridge symbols: {len(external)}")

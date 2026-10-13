@@ -27,6 +27,11 @@ def main():
         from a9288.selftest import main as selftest
 
         return selftest()
+    if args[:1] == ["trace"]:
+        from a9288.crash_trace import main as trace
+
+        sys.argv = [sys.argv[0], *args[1:]]
+        return trace()
     if not args or args == ["gui"]:
         from a9288.gui import main as gui
 
@@ -38,7 +43,7 @@ def main():
         description="GAMForge · GAM 原生重编译器：将 BBK A 系列 GAM 游戏离线重编译为 BBK 9288 / 9288T 原生程序"
     )
     parser.add_argument("--version", action="version", version=__version__)
-    parser.epilog = "命令：gui | convert GAME --sdk PATH --toolchain PATH --rom8 PATH --rome PATH"
+    parser.epilog = "命令：gui | convert GAME --sdk PATH --toolchain PATH --rom8 PATH --rome PATH | trace LOG0 LOG1 --symbols JSON"
     parser.parse_args(args)
 
 

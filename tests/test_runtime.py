@@ -12,10 +12,17 @@ ROOT = Path(__file__).resolve().parents[1]
 from a9288.compiler.boot import DEFAULT_ROME
 from a9288.paths import DATA
 
+# These extracted-helper harnesses target the default (non-linear) path;
+# test_framebuffer compiles the complete linear scaler and checks its pixels.
+NO_LINEAR_BATCH = (
+    "\n#define NATIVE_LINEAR_BEGIN() ((void)0)\n#define NATIVE_LINEAR_END() ((void)0)\n"
+)
+
 
 def performance_globals(runtime):
     return (
-        "static c6502_u32 c6502_last_frame_tick;"
+        NO_LINEAR_BATCH
+        + "static c6502_u32 c6502_last_frame_tick;"
         + runtime.split("static c6502_u32 c6502_last_frame_tick;", 1)[1].split(
             "static void bytes_set", 1
         )[0]
@@ -34,7 +41,8 @@ class NativeRuntimeHelpersTest(unittest.TestCase):
             self.skipTest("host gcc is not installed")
         runtime = (DATA / "runtime/c6502_native_runtime.c").read_text(encoding="utf-8")
         helper = (
-            '#include "c6502_native_query_assets.h"'
+            NO_LINEAR_BATCH
+            + '#include "c6502_native_query_assets.h"'
             + runtime.split('#include "c6502_native_query_assets.h"', 1)[1].split(
                 "/* E.BIN bank 9 $8195", 1
             )[0]
@@ -901,7 +909,8 @@ int main(void){
             self.skipTest("host gcc is not installed")
         runtime = (DATA / "runtime/c6502_native_runtime.c").read_text(encoding="utf-8")
         helpers = (
-            "static c6502_u16 lcd_address"
+            NO_LINEAR_BATCH
+            + "static c6502_u16 lcd_address"
             + runtime.split("static c6502_u16 lcd_address", 1)[1].split("static void line", 1)[0]
         )
         helpers += (
