@@ -31,6 +31,7 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 a
 - 名称写入 KF2 和应用标题；默认输出文件名跟随名称。
 - 编译成功、链接完整及体积检查通过后才替换旧 EXE。
 - 默认单 EXE 内置压缩资源；可选“EXE＋外置资源文件”，用于资源较大的游戏。
+- [按游戏隔离存档](docs/game-saves.md)：`A:\系统\数据\游戏\<源 GAM 文件名>\`，与 EXE 名称和显示模式无关。
 - 两种模式均包含原生游戏代码和共享运行库，真机不需要原 GAM、BIN 或 GNA 文件。
 - 分发包自带 Python/Tk/Pillow 与 PC 启动状态生成工具，不依赖开发者的 Python 安装路径。
 

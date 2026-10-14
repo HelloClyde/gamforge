@@ -17,6 +17,7 @@ from a9288.app_options import compiler_lock, default_app_name, encode_app_name, 
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.paths import DEPENDENCIES, WORK, child_environment, task_command
 from a9288.resources import pack_resources
+from a9288.save_paths import game_save_directory, game_save_name
 from a9288.targets import TARGETS, TOUCH_TARGETS
 
 DEFAULT_SDK = Path(os.environ.get("A9288_SDK", DEPENDENCIES / "sdk9288"))
@@ -125,6 +126,11 @@ def convert(args) -> None:
             "app_name": name,
             "game_entry_pc": game_info["entry"],
             "native_entry_offset": game_info["entry"] - 0x5000,
+            "save_game_name": game_save_name(game),
+            "save_directory": game_save_directory(game) + "\\",
+            "save_index": game_save_directory(game) + "\\G49NIDX.BIN",
+            "save_isolation": "source-gam-name",
+            "legacy_shared_saves_auto_imported": False,
             "app_name_encoding": "gbk",
             "app_category": "game" if target == "tsw600" else "entertainment",
             "app_category_label": profile.category,

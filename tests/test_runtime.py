@@ -588,6 +588,10 @@ static unsigned char native_window_key(int wait){assert(wait);now+=3;++polls;ret
             subprocess.run([str(exe)], check=True)
 
     def test_file_catalog_and_random_access_survive_reopen(self):
+        from save_test_support import SAVE_HOST_FS
+
+        from a9288.save_paths import c_save_config
+
         cc = shutil.which("gcc")
         if not cc:
             self.skipTest("host gcc is not installed")
@@ -616,14 +620,10 @@ typedef unsigned char c6502_u8;
 typedef unsigned short c6502_u16;
 typedef unsigned int c6502_u32;
 typedef FILE FS_FILE;
-#define fs_fopen(p,m) fopen((p)+3,m)
-#define fs_fread fread
-#define fs_fwrite fwrite
-#define fs_fseek fseek
-#define fs_ftell ftell
-#define fs_fclose fclose
-#define fs_update fflush
-#define fs_remove(p) remove((p)+3)
+"""
+            + SAVE_HOST_FS
+            + c_save_config(Path("native-persistence.gam"))
+            + """
 #define C6502_RESOURCE_SCRATCH_SIZE 1920u
 static unsigned char ram[65536],c6502_resource_scratch[1920];
 static unsigned char guest_read(unsigned short a){return ram[a];}
@@ -665,7 +665,9 @@ int main(void){
             c = Path(folder) / "test.c"
             exe = Path(folder) / "test.exe"
             c.write_text(source, encoding="utf-8")
-            subprocess.run([cc, "-O2", str(c), "-o", str(exe)], check=True)
+            subprocess.run(
+                [cc, "-O2", "-I", str(DATA / "runtime"), str(c), "-o", str(exe)], check=True
+            )
             subprocess.run([str(exe)], cwd=folder, check=True)
 
     def test_strcmp_returns_rom_int_not_stale_operand_pointer(self):

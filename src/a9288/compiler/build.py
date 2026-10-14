@@ -23,6 +23,7 @@ from a9288.compiler.fast_helpers import fast_helper
 from a9288.compiler.s1c33_compat import preserve_comparison_flags
 from a9288.paths import DATA, WORK, child_environment, task_command
 from a9288.resources import HEADER, c_resource_config, pack_resources
+from a9288.save_paths import c_save_config
 from a9288.targets import TARGETS, TOUCH_TARGETS, display_scale, target_profile
 
 
@@ -477,14 +478,12 @@ def main() -> None:
     build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include, target=args.target)
     config = runtime_build / "c6502_native_app_config.h"
     trace_build_id = None
-    config.write_text(c_name_definition(app_name), encoding="ascii")
+    config_text = c_name_definition(app_name) + c_save_config(args.game)
     resource = None
     if args.external_resources:
         resource_name, resource = pack_resources(args.game.read_bytes())
-        config.write_text(
-            c_name_definition(app_name) + c_resource_config(resource_name, resource[: HEADER.size]),
-            encoding="ascii",
-        )
+        config_text += c_resource_config(resource_name, resource[: HEADER.size])
+    config.write_text(config_text, encoding="ascii")
     if args.crash_trace:
         # Do not decode addresses with symbols from another build of the
         # same GAM. Embedding the final EXE hash in itself is circular.

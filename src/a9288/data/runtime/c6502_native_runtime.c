@@ -2360,7 +2360,7 @@ static void native_strcmp(c6502_u32 *r, c6502_u16 left, c6502_u16 right)
 
 #define C6502_FILE_RECORDS 8u
 #define C6502_OPEN_FILES 4u
-#define C6502_FILE_INDEX_PATH "a:\\G49NIDX.BIN"
+#include "c6502_native_save_paths.h"
 
 typedef struct __attribute__((packed)) C6502_FileRecord {
     c6502_u8 valid;
@@ -2386,7 +2386,7 @@ static char hex_digit(c6502_u32 value)
 
 static void file_path(char *path, c6502_u8 type, c6502_u16 name)
 {
-    const char prefix[] = "a:\\G49";
+    const char prefix[] = C6502_SAVE_DIRECTORY "\\G49";
     c6502_u32 index;
     for (index = 0u; index < sizeof(prefix) - 1u; ++index)
         path[index] = prefix[index];
@@ -2403,7 +2403,11 @@ static void file_path(char *path, c6502_u8 type, c6502_u16 name)
 static void save_file_index(void)
 {
     static const c6502_u8 magic[4] = {'G', '4', '9', 'I'};
-    FS_FILE *file = fs_fopen(C6502_FILE_INDEX_PATH, "wb");
+    FS_FILE *file;
+    /* In particular, a failed game prepare must not overwrite an index
+       before this session's directory/catalog has been initialized. */
+    if (!c6502_files_initialized) return;
+    file = fs_fopen(C6502_FILE_INDEX_PATH, "wb");
     if (!file)
         return;
     (void)fs_fwrite(magic, 1, sizeof(magic), file);
@@ -2421,6 +2425,7 @@ static void load_file_index(void)
         sizeof(c6502_file_records));
     bytes_set((c6502_u8 *)c6502_open_files, 0u,
         sizeof(c6502_open_files));
+    native_save_initialize();
     file = fs_fopen(C6502_FILE_INDEX_PATH, "rb");
     if (!file)
         return;
@@ -2428,9 +2433,13 @@ static void load_file_index(void)
         magic[0] != 'G' || magic[1] != '4' || magic[2] != '9' ||
         magic[3] != 'I' ||
         fs_fread(c6502_file_records, 1, sizeof(c6502_file_records), file) !=
-            sizeof(c6502_file_records))
+            sizeof(c6502_file_records)) {
         bytes_set((c6502_u8 *)c6502_file_records, 0u,
             sizeof(c6502_file_records));
+        /* Preserve a corrupt/truncated index for recovery, never replace
+           it by an empty one and then overwrite its unindexed saves. */
+        c6502_files_initialized = 0u;
+    }
     (void)fs_fclose(file);
 }
 
@@ -2449,7 +2458,8 @@ static int file_record(c6502_u8 type, c6502_u16 name)
 static int allocate_open_file(c6502_u32 record, const char *mode)
 {
     c6502_u32 index;
-    char path[20];
+    char path[C6502_SAVE_PATH_CAPACITY];
+    if (!c6502_files_initialized) return -1;
     for (index = 0u; index < C6502_OPEN_FILES; ++index) {
         if (!c6502_open_files[index].stream) {
             file_path(path, c6502_file_records[record].type,
@@ -2547,7 +2557,7 @@ static void api_file(c6502_u32 *r, c6502_u32 id)
             if (valid) valid = fs_fseek(c6502_open_files[record].stream,
                 0, SEEK_SET) >= 0;
             if (!valid) {
-                char path[20];
+                char path[C6502_SAVE_PATH_CAPACITY];
                 (void)fs_fclose(c6502_open_files[record].stream);
                 c6502_open_files[record].stream = 0;
                 file_path(path, c6502_file_records[index].type, assigned);
@@ -2602,7 +2612,7 @@ static void api_file(c6502_u32 *r, c6502_u32 id)
         return;
     }
     if (id == C6502_BRIDGE_c6502_adapter_filedel) {
-        char path[20];
+        char path[C6502_SAVE_PATH_CAPACITY];
         (void)fs_fclose(c6502_open_files[handle].stream);
         c6502_open_files[handle].stream = 0;
         file_path(path, c6502_file_records[record].type,
@@ -3493,6 +3503,7 @@ int c6502_native_prepare(void)
     c6502_u32 index;
     c6502_u32 packed_regs;
     c6502_u32 status;
+    c6502_files_initialized = 0u;
     bytes_set((c6502_u8 *)&c6502_native_state, 0u, sizeof(c6502_native_state));
     c6502_native_state.ram = c6502_ram;
     c6502_native_state.game_size = C6502_GAME_SIZE;
@@ -3768,6 +3779,10 @@ void c6502_native_perf_end(void)
     if (!file) return;
     (void)fs_fwrite(header, 1, sizeof(header) - 1u, file);
     native_log_value(file, "game_size", C6502_GAME_SIZE);
+    (void)fs_fwrite("save_directory=", 1, sizeof("save_directory=") - 1u, file);
+    (void)fs_fwrite(C6502_SAVE_DIRECTORY, 1, sizeof(C6502_SAVE_DIRECTORY) - 1u, file);
+    (void)fs_fwrite("\n", 1, 1, file);
+    native_log_value(file, "save_catalog_enabled", c6502_files_initialized);
 #ifdef C6502_EXTERNAL_RESOURCES
     native_log_value(file, "external_resources", 1u);
     native_log_value(file, "resource_cache_bytes", NR_SLOTS*NR_PAGE);

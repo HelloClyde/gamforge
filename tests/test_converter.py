@@ -210,6 +210,10 @@ class NativeConverterTest(unittest.TestCase):
         self.assertEqual(result["app_name"], "魔塔")
         self.assertEqual(result["game_entry_pc"], 0x5046)
         self.assertEqual(result["native_entry_offset"], 0x46)
+        self.assertEqual(result["save_directory"], "A:\\系统\\数据\\游戏\\测试 游戏\\")
+        self.assertEqual(result["save_index"], "A:\\系统\\数据\\游戏\\测试 游戏\\G49NIDX.BIN")
+        self.assertEqual(result["save_isolation"], "source-gam-name")
+        self.assertFalse(result["legacy_shared_saves_auto_imported"])
         self.assertFalse(result["runtime_interpreter_fallback"])
 
     def test_9288t_report_and_worker_target(self):
