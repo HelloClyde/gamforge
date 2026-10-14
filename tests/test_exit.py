@@ -208,7 +208,7 @@ typedef struct {unsigned message,hWnd,wParam,lParam;} T_GUI_Msg;
 static struct {unsigned window,hdc;} c6502_native_state;
 static unsigned c6502_entry_regs[15];
 static unsigned scenario,destroys,cleanups,posts,quits,game_enters,releases,
- gets,finish_calls,timer_starts,timer_stops,frees,show_calls;
+ gets,finish_calls,timer_starts,timer_stops,frees,show_calls,host_starts,host_stops,dialogs;
 static unsigned char framebuffer[9600];
 static T_WORD(*callback)(T_GUI_HWND,T_WORD,T_GUI_WPARAM,T_GUI_LPARAM);
 static int c6502_native_prepare(void){return 1;}
@@ -240,10 +240,14 @@ static void fnGUI_DispatchMessage(T_GUI_Msg*m){callback(m->hWnd,m->message,m->wP
 #include "c6502_native_exit.h"
 static int fnGUI_SetTimer(unsigned w,unsigned id,unsigned period){assert(w==77 && id==1);++timer_starts;return 1;}
 static int fnGUI_KillTimer(unsigned w,unsigned id){assert(w==77 && id==1);++timer_stops;return 1;}
-static void fnGUI_MessageBox(unsigned w,const unsigned char*t,const unsigned char*b,unsigned style){assert(0);}
+static void fnGUI_MessageBox(unsigned w,const unsigned char*t,const unsigned char*b,unsigned style){
+ assert((scenario==5 || scenario==6) && w==77);++dialogs;
+ if(scenario==6){callback(w,MSG_CLOSE,0,0);quits=0;}}
 static void c6502_native_present(void){memset(framebuffer,0,sizeof(framebuffer));}
 static void c6502_native_perf_begin(void){}
-static void c6502_native_perf_end(void){}
+static void c6502_native_perf_end(void){assert(host_stops==1);}
+static int c6502_native_t_host_begin(void){++host_starts;return scenario!=5 && scenario!=6;}
+static void c6502_native_t_host_end(void){assert(game_enters==1 && !timer_starts);++host_stops;}
 static void c6502_native_enter(unsigned*r){++game_enters;}
 static void c6502_native_finish_input(void){
  ++finish_calls;
@@ -258,18 +262,21 @@ static void logged_free(void*p){++frees;free(p);}
 """
         + app
         + r"""
-int main(void){for(scenario=0;scenario<5;++scenario){
+int main(void){for(scenario=0;scenario<7;++scenario){
  destroys=cleanups=posts=quits=game_enters=releases=gets=finish_calls=0;
  timer_starts=timer_stops=frees=show_calls=0;
+ host_starts=host_stops=dialogs=0;
  c6502_native_state.window=c6502_native_state.hdc=0;
  memset(framebuffer,0xa5,sizeof(framebuffer));
  unsigned returned=App_Main();assert(releases==1 && frees==1);
  for(unsigned i=0;i<sizeof(framebuffer);++i)assert(framebuffer[i]==0xa5);
  if(scenario==4){assert(returned==(unsigned)-1 && !destroys && !cleanups && !show_calls);continue;}
  assert(returned==0 && destroys==1 && cleanups==1 && !quits);
- assert(game_enters==(scenario==3?0:1));
- assert(posts==(scenario==0?1:0)); /* Never close a window twice. */
- assert(timer_starts==timer_stops && finish_calls==(scenario==3?0:1));
+ assert(game_enters==((scenario==3 || scenario==5 || scenario==6)?0:1));
+ assert(host_starts==(scenario==3?0:1) && host_stops==game_enters);
+ assert(dialogs==((scenario==5 || scenario==6)?1:0));
+ assert(posts==((scenario==0 || scenario==5)?1:0)); /* Never close a window twice. */
+ assert(timer_starts==timer_stops && finish_calls==((scenario==3 || scenario==6)?0:1));
  }return 0;}
 """,
     )

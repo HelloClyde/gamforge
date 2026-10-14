@@ -1163,6 +1163,28 @@ static void write_psr(c6502_u32 value)
 #include "c6502_native_matrix.h"
 #include "c6502_native_exit.h"
 #include "c6502_native_clock.h"
+#ifdef C6502_TARGET_9288T
+#include "c6502_native_9288t_host.h"
+
+int c6502_native_t_host_begin(void)
+{
+    NativeTResetIdle reset = 0;
+    c6502_u32 address = ((const c6502_u32 *)tpDL_GUITable)[
+        C6502_T_AUTOCLOSE_GUI_OFFSET / sizeof(c6502_u32)];
+    /* The checked body belongs to supported firmware RAM, not app/IO.
+       A foreign slot is never called speculatively. */
+    if (address >= 0x02000000u && address <= 0x026ffff6u && !(address & 1u) &&
+        native_t_idle_reset_body((const c6502_u8 *)address))
+        reset = (NativeTResetIdle)address;
+    return native_t_host_start(reset, tpDL_ROS33Table->ros33_sus_tsk,
+        tpDL_ROS33Table->ros33_rsm_tsk, native_clock());
+}
+
+void c6502_native_t_host_end(void)
+{
+    native_t_host_stop();
+}
+#endif
 #ifdef C6502_CRASH_TRACE
 #include "c6502_native_debug.h"
 #endif
@@ -1275,6 +1297,11 @@ static void native_capture_keys(void)
     if (c6502_key_initialized &&
         *hardware_byte(C6502_CTM_DIVIDER_ADDRESS) == (c6502_u8)c6502_key_scan_tick) return;
     now = native_clock();
+#ifdef C6502_TARGET_9288T
+    /* Foreground keepalive, including idle animations/no key presses.
+       This host call is OUTSIDE the matrix IRQ-masked transaction. */
+    native_t_host_pulse(now);
+#endif
 #ifdef C6502_TARGET_9288S
     native_s_pump();
     now = native_clock(); /* Pumped edges may have advanced the scan clock. */
@@ -3758,12 +3785,12 @@ void c6502_native_perf_end(void)
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=S-SOFTKEY-1\nclock_hz=256\n";
 #elif defined(C6502_PROFILE_OTHER)
 #ifdef C6502_TARGET_9288T
-    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-SCALE-1\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-HOST-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=OTHER-PROFILE-1\nclock_hz=256\n";
 #endif
 #elif defined(C6502_TARGET_9288T)
-    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-SCALE-1\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-HOST-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
 #endif
@@ -3783,6 +3810,15 @@ void c6502_native_perf_end(void)
     (void)fs_fwrite(C6502_SAVE_DIRECTORY, 1, sizeof(C6502_SAVE_DIRECTORY) - 1u, file);
     (void)fs_fwrite("\n", 1, 1, file);
     native_log_value(file, "save_catalog_enabled", c6502_files_initialized);
+#ifdef C6502_TARGET_9288T
+    native_log_value(file, "t_host_api_verified", c6502_t_host.verified);
+    native_log_value(file, "t_host_keepalive_calls", c6502_t_host.resets);
+    native_log_value(file, "t_host_keepalive_max_gap_ticks", c6502_t_host.max_gap);
+    native_log_value(file, "t_host_task3_suspend_result_raw", (c6502_u32)c6502_t_host.suspend_result);
+    native_log_value(file, "t_host_task3_resume_result_raw", (c6502_u32)c6502_t_host.resume_result);
+    native_log_value(file, "t_host_task3_resumed", c6502_t_host.task_resumed);
+    native_log_value(file, "t_host_active_end", c6502_t_host.active);
+#endif
 #ifdef C6502_EXTERNAL_RESOURCES
     native_log_value(file, "external_resources", 1u);
     native_log_value(file, "resource_cache_bytes", NR_SLOTS*NR_PAGE);

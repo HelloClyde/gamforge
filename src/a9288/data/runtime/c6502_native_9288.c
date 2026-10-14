@@ -120,16 +120,34 @@ T_WORD App_Main(void)
     /* Only used to rasterise glyphs into our explicit VirtualScr. The
        captioned client DC adds its screen origin to glyph coordinates. */
     c6502_native_state.hdc = fnGUI_GetDC(HWND_DESKTOP);
+#ifdef C6502_TARGET_9288T
+    if (!c6502_native_t_host_begin()) {
+        static const T_BYTE error[] = "Unsupported 9288T power API";
+        fnGUI_MessageBox(window, error, error, MB_OK);
+        if (native_window_closed) goto release_game;
+        (void)fnGUI_SetActiveWindow(window);
+        (void)fnGUI_SetFocus(window);
+        goto finish_input;
+    }
+#endif
     c6502_native_present();
     c6502_native_perf_begin();
     c6502_native_enter(c6502_entry_regs);
     c6502_native_exit_begin();
+#ifdef C6502_TARGET_9288T
+    c6502_native_exit_checkpoint(NATIVE_EXIT_T_HOST_RESTORE, 0u, 0u);
+    c6502_native_t_host_end();
+    c6502_native_exit_checkpoint(NATIVE_EXIT_T_HOST_RESTORE, 1u, 0u);
+#endif
 #ifdef C6502_TARGET_9288S
     (void)fnGUI_KillTimer(window, 2);
 #endif
     c6502_native_exit_checkpoint(NATIVE_EXIT_PERF, 0u, 0u);
     c6502_native_perf_end();
     c6502_native_exit_checkpoint(NATIVE_EXIT_PERF, 1u, 0u);
+#ifdef C6502_TARGET_9288T
+finish_input:
+#endif
     /* Rejoin the host message framework only after guest execution ends.
        Timer #1 drives the release/host-input handoff, not the game. */
     c6502_native_exit_checkpoint(NATIVE_EXIT_TIMER_START, 0u, (c6502_u32)window);

@@ -40,6 +40,10 @@ void c6502_native_invalidate_screen(void);
 void c6502_native_perf_begin(void);
 void c6502_native_perf_end(void);
 void c6502_native_finish_input(void);
+#ifdef C6502_TARGET_9288T
+int c6502_native_t_host_begin(void);
+void c6502_native_t_host_end(void);
+#endif
 #ifdef C6502_TARGET_9288S
 void c6502_native_pointer(T_WORD message, T_GUI_LPARAM lparam);
 #endif

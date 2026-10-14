@@ -38,7 +38,7 @@ static const char *const nd_exit_names[] = {
     "stop_release_timer", "error_dialog", "release_dc", "release_game_resources",
     "post_window_close", "drain_app_window", "cleanup_app_window",
     "restore_launcher_9288", "restore_desktop_frame", "free_desktop_backup", "return_to_host",
-    "destroy_app_window", "post_app_quit"
+    "destroy_app_window", "post_app_quit", "restore_9288t_host"
 };
 
 static void nd_indicator(void)
