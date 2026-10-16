@@ -1,6 +1,8 @@
 """Native Mac paths and worker launches, without requiring a Mac to test routing."""
 
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -142,3 +144,17 @@ def test_gui_smoke_dispatch_does_not_enter_interactive_main():
     ):
         __main__.main()
     smoke.assert_called_once_with()
+
+
+def test_boot_helper_really_builds_on_the_current_host(tmp_path):
+    """Catch target-specific C/linker errors, notably Mach-O section syntax."""
+    from a9288.compiler.boot import build_helper
+
+    compiler = shutil.which("clang" if sys.platform == "darwin" else "gcc")
+    if not compiler:
+        pytest.skip("native host C compiler is not installed")
+    executable = tmp_path / ("native-boot.exe" if os.name == "nt" else "native-boot")
+    build_helper(executable, cc=compiler)
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
+    assert result.returncode in (1, 2)
+    assert "usage" in (result.stdout + result.stderr).lower()

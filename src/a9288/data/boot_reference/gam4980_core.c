@@ -3852,11 +3852,18 @@ _Static_assert(sizeof(void *) == 4u,
     "GAM4980_IRAM_EXEC_ASM requires the 32-bit 9288 target ABI");
 #endif
 #else
+#if defined(__APPLE__) && defined(__MACH__)
+/* This is the PC-side snapshot exporter, not an IRAM image. Mach-O uses
+ * segment,section syntax and cannot accept the 9288 ELF section names. */
+#define S6502_IRAM_EXEC_ATTRIBUTE __attribute__((noinline, used, minsize))
+#define S6502_IRAM_MEMORY_HELPER static __attribute__((noinline, used, minsize))
+#else
 #define S6502_IRAM_EXEC_ATTRIBUTE \
     __attribute__((noinline, used, minsize, section(".iram.hot.exec_engine")))
 #define S6502_IRAM_MEMORY_HELPER \
     static __attribute__((noinline, used, minsize, \
         section(".iram.hot.exec_helper")))
+#endif
 #define S6502_IRAM_ALWAYS_INLINE static inline __attribute__((always_inline))
 #define S6502_IRAM_FLAG_N 0x80u
 #define S6502_IRAM_FLAG_V 0x40u
