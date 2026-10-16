@@ -233,6 +233,7 @@ def test_full_bundle_mac_smoke_with_mocked_native_tools(mac, monkeypatch, tmp_pa
     tools.mkdir(parents=True)
     for name in full.TOOLS:
         (tools / name).write_bytes(b"MOCK MACH-O")
+    (tools.parent / "manifest.json").write_text('{"fixture": "native build provenance"}')
     rom = tmp_path / "firmware.bin"
     rom.write_bytes(bytes(2 * 1024 * 1024))
     output = tmp_path / "full.zip"
@@ -286,6 +287,13 @@ def test_full_bundle_mac_smoke_with_mocked_native_tools(mac, monkeypatch, tmp_pa
         assert metadata["sdk_firmware_redistribution_authorized"] is True
         names = zipped.namelist()
         assert "GAMForge/GAMForge.app/Contents/Resources/dependencies/roms/8.BIN" in names
+        input_provenance = json.loads(
+            zipped.read(
+                "GAMForge/GAMForge.app/Contents/Resources/dependencies/"
+                "toolchain/BUILD-INPUT-MANIFEST.json"
+            )
+        )
+        assert input_provenance == {"fixture": "native build provenance"}
         assert not any(name.endswith((".exe", ".dll", ".gam")) for name in names)
         manifest = json.loads(zipped.read("GAMForge/MANIFEST.sha256.json"))
         for name, digest in manifest.items():

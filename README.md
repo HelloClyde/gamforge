@@ -57,11 +57,15 @@ v1.3.0 起全套包包含四个输出目标所需依赖；v1.2.0 支持 9288 / 9
 `.report.json`。单文件模式真机只需 EXE；外置模式还需配套 RES。
 工作目录默认 `%LOCALAPPDATA%\A9288\work`。
 
-### macOS（新增，待原生 CI 验证和发布）
+### macOS（新增，测试分支）
 
 新增 Apple Silicon（`arm64`）和 Intel（`x86_64`）两套原生构建，均提供
 `GAMForge.app` 和 `GAMForge-CLI`，不依赖 Wine。**现有 v1.4.0 Release 仍是
 Windows 包，新增 Mac 构建尚未发布，不要把 Windows ZIP 改名为 Mac 版。**
+
+两种 Mac 的原生应用构建、冻结 worker、解压后 GUI 和签名检查已通过
+[测试分支 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)。
+原生工具链及全套包的独立转换验证另行进行；轻量应用通过不等于完整转换链已验证。
 
 Mac 构建与源码运行方法见 [macOS 使用与打包](docs/macos.md)。轻量包包含
 Python/Tk/Pillow 和本机启动 helper；转换还需对应 SDK、A 系列固件，以及

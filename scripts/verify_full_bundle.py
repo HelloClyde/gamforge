@@ -347,7 +347,7 @@ def verify_bundle(bundle, work):
 
 
 def assemble(args):
-    from build_toolchain import file_sha256, reusable_output
+    from build_toolchain import LEGACY_BUILDER_SHA256, file_sha256, reusable_output
 
     require(
         sys.platform == "darwin" and platform.machine() == args.architecture,
@@ -375,6 +375,47 @@ def assemble(args):
         "patch_sha256": file_sha256(ROOT / "toolchain" / manifest["patch"]),
         "builder_sha256": file_sha256(ROOT / "scripts/build_toolchain.py"),
     }
+    # The first native CI build omitted Clang's standard resource headers. Reuse
+    # its verified binaries only through the builder's explicit, hash-pinned
+    # migration; never waive normal provenance/hash validation to save a build.
+    input_manifest = json.loads((toolchain / "manifest.json").read_text(encoding="utf-8"))
+    if input_manifest.get("builder_sha256") == LEGACY_BUILDER_SHA256:
+        source = args.work_dir / "pinned-resource-source"
+        for command in (
+            ["git", "init", str(source)],
+            ["git", "-C", str(source), "remote", "add", "origin", manifest["repository"]],
+            [
+                "git",
+                "-C",
+                str(source),
+                "fetch",
+                "--depth=1",
+                "--filter=blob:none",
+                "origin",
+                manifest["revision"],
+            ],
+            ["git", "-C", str(source), "sparse-checkout", "init", "--cone"],
+            ["git", "-C", str(source), "sparse-checkout", "set", "clang/lib/Headers"],
+            ["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"],
+        ):
+            subprocess.run(command, check=True)
+        repaired = args.work_dir / "repaired-tools"
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/build_toolchain.py"),
+                "--expect-host",
+                expected["host"],
+                "--import-tools",
+                str(toolchain),
+                "--resource-headers",
+                str(source / "clang/lib/Headers"),
+                "--output-dir",
+                str(repaired),
+            ],
+            check=True,
+        )
+        toolchain = repaired / tools_name
     require(
         reusable_output(toolchain, expected),
         "Toolchain manifest/builder/patch/file hashes differ from source",
@@ -429,6 +470,8 @@ def assemble(args):
         public_dependencies_sha256=PUBLIC_SHA256,
         source_sha=head,
         archive_sha256=digest(archive),
+        toolchain_input_manifest=input_manifest,
+        toolchain_manifest=json.loads((toolchain / "manifest.json").read_text(encoding="utf-8")),
         release_published=False,
     )
     write_json(args.output_dir / f"validation-macos-{args.architecture}.json", evidence)

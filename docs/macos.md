@@ -6,11 +6,14 @@
 ## 当前状态
 
 已加入 Apple Silicon `arm64` 与 Intel `x86_64` 的源码适配、`.app` / CLI 打包入口和
-双架构 CI。**当前 v1.4.0 Release 仍仅有 Windows 资产；本次 Mac 支持尚未经过 Mac
-runner 实际执行，也未发布 Mac 下载包。** Windows 单元测试不能代替 Mac 原生构建和 GUI 验证。
+双架构 CI。**当前 v1.4.0 Release 仍仅有 Windows 资产；Mac 测试包尚未发布为 Release。**
+2026-10-16 的 [应用 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)
+在两个 Mac runner 上各执行 508 项测试（464 通过、44 项可选环境跳过），完成本机 helper、
+冻结 worker、ZIP 解压后签名、自检和实际 GUI 窗口检查。对应源提交为 `6610c689`。
+这不等于完整转换链已经通过；原生 S1C33 工具链和全套包转换使用下面的独立验证流程。
 
 构建目标最低系统为 macOS 11；打包器检查每个 Mach-O 的实际最低版本，若依赖要求
-更高版本则拒绝生成误标的包。CI 计划运行于 macOS 15，不能据此宣称所有 macOS 11+
+更高版本则拒绝生成误标的包。CI 运行于 macOS 15，不能据此宣称所有 macOS 11+
 机器、游戏或真机流程都已验证。后续发布以实际资产和 CI 记录为准。
 
 ## 使用分发包
@@ -190,5 +193,22 @@ Mac CI 执行测试、本机 helper、冻结 worker、自检，以及解压 ZIP 
 烟雾测试；后者不运行游戏、不转换用户数据。所有三平台成功后，tag 发布阶段才收集轻量 ZIP
 及 SHA-256；SDK/固件和全套包不会自动从维护者电脑上传。
 
-CI 不提供版权 GAM，因此其通过不等于实际游戏全流程、Mac 所有版本或 BBK 真机验证。
-当前工作仅接通这些检查，尚无本轮 Mac CI 成功记录；发布时必须补齐实际运行结果。
+### 全套包独立验证
+
+手动运行已注册的 **Build**，同时填写 `app_run_id`、`toolchain_run_id` 时，
+只执行全套验证；两个值都留空则执行通常的应用构建。不能只填写一个值。
+例如在测试分支中执行（替换为实际成功的运行 ID）：
+
+```sh
+gh workflow run build.yml --ref codex/macos-support \
+  -f app_run_id=APP_RUN_ID -f toolchain_run_id=TOOLCHAIN_RUN_ID
+```
+
+应用 artifact 必须来自同一分支的当前源提交；工具链还要匹配固定 LLVM 提交、ABI 补丁、
+宿主、构建脚本与文件哈希。SDK/固件只从已授权公开包按固定 SHA-256 提取，不复制 Windows
+程序。验证在清除开发者依赖路径的环境中用冻结 CLI 转换四个目标，再移动应用到中文空格路径
+并测试外置 RES。每种架构输出 ZIP、校验和与 `validation-*.json`，**不创建 Release**。
+
+输入为仓库脚本构造的最小 6502 程序和确定性资源，不包含版权游戏；合成 GAM 和转换 EXE
+也不进入 artifact。记录启动快照头、RAM 和 EXE/RES 哈希，可做跨宿主比较。
+CI 通过不等于实际游戏全流程、所有 Mac 系统版本或 BBK 真机验证。

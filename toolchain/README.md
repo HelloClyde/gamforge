@@ -7,6 +7,8 @@
 固定源代码提交和 ABI 说明见 `manifest.json`，补丁在 `9288-gnu33-abi.patch`。
 构建后执行参数寄存器/返回值/delay-slot 探针，再用安装后的四个工具实际编译两个
 S1C33 对象、链接 ELF、读取符号表、导出二进制，不只是检查编译器名字。
+分发包还必须保留 `lib/clang/<版本>/include` 标准头文件；探针使用 `-nostdinc`
+隔离宿主头文件，实际编译 `stdarg.h`、`stddef.h` 和 `stdint.h`。
 
 ## GitHub Actions
 
@@ -49,6 +51,12 @@ Apple libc++、当前宿主架构和 `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`，不依
 `dist/s1c33-9288-toolchain.zip` 文件名供已有本地脚本使用。
 分发时保留上游许可证、固定提交、补丁和 manifest。
 9288 SDK 是独立依赖，不包含在这个工具链 ZIP 中。
+
+首轮 Mac CI 的旧包只包含四个工具，遗漏资源头文件，不能直接作为完整工具链使用。
+`--import-tools` / `--resource-headers` 是针对该已知构建脚本哈希的受限补全入口，
+不是忽略版本校验：源提交、补丁、架构、最低系统、旧文件全集及哈希必须匹配，
+资源头还须逐文件匹配固定提交中的 Git blob；补全在新目录进行并重跑全部探针。
+常规构建不需要这两个选项，直接构建并安装 `clang-resource-headers`。
 
 ```shell
 # 已有产物需同时匹配源码、补丁、脚本、宿主和所有文件哈希；仍重新跑 ABI/链接探针。

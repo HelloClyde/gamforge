@@ -198,6 +198,13 @@ def main():
                 )
         for name in ("LLVM-LICENSE.TXT", "9288-gnu33-abi.patch", "manifest.json"):
             shutil.copyfile(ROOT / "toolchain" / name, deps / "toolchain" / name)
+        if macos:
+            # Input hashes predate ad-hoc re-signing above; FULL-BUNDLE.json
+            # separately records the final installed bytes, including signatures.
+            shutil.copyfile(
+                args.toolchain / "manifest.json",
+                deps / "toolchain/BUILD-INPUT-MANIFEST.json",
+            )
         compiler = tools / ("clang" + suffix)
         verify_9288_abi(str(compiler))
         env = isolated_environment(work, args.platform)
