@@ -131,7 +131,8 @@ def sign_app(app):
 
 
 def verify_native(executable, architecture):
-    subprocess.run(["lipo", "-verify_arch", architecture, str(executable)], check=True)
+    # -verify_arch consumes all following arguments as architecture names.
+    subprocess.run(["lipo", str(executable), "-verify_arch", architecture], check=True)
 
 
 def verify_system_libraries(executable):

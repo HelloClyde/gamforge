@@ -75,6 +75,14 @@ def test_host_check_refuses_cross_compile(mac, monkeypatch):
         mac.require_native_host("arm64")
 
 
+def test_lipo_input_precedes_variadic_architecture_option(mac, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(mac.subprocess, "run", lambda command, **kw: calls.append((command, kw)))
+    executable = tmp_path / "native-boot"
+    mac.verify_native(executable, "arm64")
+    assert calls == [(["lipo", str(executable), "-verify_arch", "arm64"], {"check": True})]
+
+
 def test_host_check_requires_matching_python_architecture(mac, monkeypatch):
     monkeypatch.setattr(mac.sys, "platform", "darwin")
     monkeypatch.setattr(mac.platform, "machine", lambda: "arm64")

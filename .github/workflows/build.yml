@@ -6,17 +6,49 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      app_run_id:
+        description: Optional existing app run ID; supply with toolchain_run_id for full Mac validation only
+        type: string
+        required: false
+        default: ''
+      toolchain_run_id:
+        description: Optional existing toolchain run ID; supply with app_run_id for full Mac validation only
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}${{ inputs.app_run_id != '' && '-full-validation' || '' }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  validate-full-inputs:
+    name: Reject incomplete full-validation inputs
+    if: ${{ github.event_name == 'workflow_dispatch' && ((inputs.app_run_id == '' && inputs.toolchain_run_id != '') || (inputs.app_run_id != '' && inputs.toolchain_run_id == '')) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo 'Supply both app_run_id and toolchain_run_id, or leave both empty.'
+          exit 1
+
+  full-macos:
+    name: Validate existing native Mac artifacts
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.app_run_id != '' && inputs.toolchain_run_id != '' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/macos-full.yml
+    with:
+      app_run_id: ${{ inputs.app_run_id }}
+      toolchain_run_id: ${{ inputs.toolchain_run_id }}
+
   test:
     name: Python and native runtime tests
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.app_run_id == '' && inputs.toolchain_run_id == '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
