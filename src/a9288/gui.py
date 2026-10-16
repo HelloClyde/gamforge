@@ -258,13 +258,12 @@ class ConverterApp:
         }
         self.current_target = self.target.get()
         self.sdk.set(self.sdk_paths[self.current_target])
-        saved_scale = settings.get("display_scale9288t", "1x")
-        self.display_scales = {
-            "9288": "2x",
-            "9288t": saved_scale if saved_scale in DISPLAY_SCALES["9288t"] else "1x",
-            "9288s": "1x",
-            "tsw600": "1x",
-        }
+        saved_scale = settings.get("display_scale9288t")
+        self.display_scales = {target: profile.scale for target, profile in TARGETS.items()}
+        # Keep an existing explicit choice when upgrading; only new or invalid
+        # settings use the target's current default.
+        if saved_scale in DISPLAY_SCALES["9288t"]:
+            self.display_scales["9288t"] = saved_scale
         self.display_scale = tk.StringVar(value=self.display_scales[self.current_target])
         self.toolchain = tk.StringVar(
             value=dependency_setting(settings.get("toolchain"), DEFAULT_TOOLCHAIN)
@@ -671,8 +670,10 @@ class ConverterApp:
             + (
                 " 点对点居中"
                 if scale == "1x"
-                else " 四灰阶双线性放大"
+                else " 图片四灰阶线性 · 文字清晰点阵"
                 if scale == "1.5x-linear"
+                else " 图片四灰阶锐利缩放 · 文字清晰点阵"
+                if scale == "1.5x-sharp"
                 else " 最近邻放大"
             )
             + (" · 上屏游戏 / 下屏软键盘" if target in TOUCH_TARGETS else "")

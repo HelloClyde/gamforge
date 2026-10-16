@@ -15,11 +15,35 @@ from pathlib import Path
 from a9288.compiler.backend import imm
 from a9288.compiler.s1c33_compat import preserve_comparison_flags
 
+TEXT_SCENARIOS = ("text24", "text12", "text_redraw")
+
+
+def glyph_byte(y, column, target, inverted):
+    """Fixed probe glyphs, deliberately unlike a scaled guest glyph."""
+    return (
+        (y * (29 if target else 17) + column * (53 if target else 43) + 17)
+        ^ (255 if inverted else 0)
+    ) & 255
+
 
 def reference_frame(scenario, calls, scale, changing):
-    """Independent scalar reference, including linear clamp/4-tap rounding."""
+    """Independent scalar reference, including filter support and edge clamps."""
     bits = [[0] * 159 for _ in range(96)]
-    if scenario != "audit":
+    text = scenario in TEXT_SCENARIOS
+    inverted = changing and bool((calls - 1) & 1)
+    if text:
+        gx, gy, width = (9, 32, 8) if scenario == "text12" else (7, 16, 16)
+        for y in range(16):
+            for x in range(width):
+                bits[gy + y][gx + x] = int(
+                    bool(glyph_byte(y, x // 8, False, inverted) & (128 >> (x & 7)))
+                )
+        if scenario == "text_redraw":
+            for y in range(16, 32):
+                for x in range(16, 32):
+                    value = ((y * 17 + ((x - 16) // 8) * 31 + 17) ^ (255 if inverted else 0)) & 255
+                    bits[y][x] = int(bool(value & (128 >> (x & 7))))
+    elif scenario != "audit":
         tile = scenario in ("tile", "picture_tile")
         rows = range(16, 32) if tile else range(96)
         first, count = (4, 2) if tile else (0, 20)
@@ -37,7 +61,18 @@ def reference_frame(scenario, calls, scale, changing):
     frame = bytearray(b"\xff" * 9600)
     for y in range(96 if scale == "1x" else 144):
         for x in range(159 if scale == "1x" else 239):
-            if scale == "1.5x-linear":
+            if scale == "1.5x-sharp":
+                # Exact area overlap, expressed in thirds of a source pixel.
+                # A destination pixel occupies a 2x2 square in these units;
+                # source pixels occupy 3x3 squares. No production LUT is used.
+                white_area = 0
+                for sy in range(2 * y // 3, (2 * y + 1) // 3 + 1):
+                    wy = min(2 * y + 2, 3 * sy + 3) - max(2 * y, 3 * sy)
+                    for sx in range(2 * x // 3, (2 * x + 1) // 3 + 1):
+                        wx = min(2 * x + 2, 3 * sx + 3) - max(2 * x, 3 * sx)
+                        white_area += (1 - bits[min(sy, 95)][min(sx, 158)]) * wx * wy
+                color = (3 * white_area + 2) // 4
+            elif scale == "1.5x-linear":
                 nx, ny = 4 * x - 1, 4 * y - 1
                 sx, sy = max(nx, 0) // 6, max(ny, 0) // 6
                 wx, wy = max(nx, 0) % 6, max(ny, 0) % 6
@@ -57,11 +92,26 @@ def reference_frame(scenario, calls, scale, changing):
             px, py = (x + 40, y + 32) if scale == "1x" else (x, y + 8)
             at, shift = py * 60 + px // 4, 6 - 2 * (px & 3)
             frame[at] = (frame[at] & ~(3 << shift)) | (color << shift)
+    if text:
+        # Opaque target-resolution glyph. The redraw removes coverage for
+        # every guest pixel touched by the bitmap, not a blurred mask.
+        left, top = (gx * 3 + 1) // 2, (gy * 3 + 1) // 2
+        for y in range(24):
+            for x in range(width * 3 // 2):
+                px, py = left + x, top + y
+                if scenario == "text_redraw" and 24 <= px < 48 and 24 <= py < 48:
+                    continue
+                black = bool(glyph_byte(y, x // 8, True, inverted) & (128 >> (x & 7)))
+                at, shift = (py + 8) * 60 + px // 4, 6 - 2 * (px & 3)
+                frame[at] = (frame[at] & ~(3 << shift)) | ((0 if black else 3) << shift)
     return bytes(frame)
 
 
 def run(command):
-    return subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or f"command failed: {command}")
+    return result
 
 
 def main():
@@ -71,7 +121,7 @@ def main():
     parser.add_argument("--emulator", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--calls", type=int, default=33)
-    parser.add_argument("--display-scale", choices=("1x", "1.5x", "1.5x-linear"))
+    parser.add_argument("--display-scale", choices=("1x", "1.5x", "1.5x-linear", "1.5x-sharp"))
     parser.add_argument(
         "--changing-input",
         action="store_true",
@@ -81,11 +131,18 @@ def main():
     parser.add_argument(
         "--include-pictures", action="store_true", help="call the actual bitmap API"
     )
+    parser.add_argument(
+        "--include-text",
+        action="store_true",
+        help="cached 24x24/12x24 glyph output and bitmap-over-text redraw; no GUI font calls",
+    )
     args = parser.parse_args()
     if not 2 <= args.calls <= 128:
         parser.error("--calls must be between 2 and 128")
     if args.changing_input and not args.calls & 1:
         parser.error("--changing-input requires odd --calls for identical final-frame comparison")
+    if args.include_text and args.display_scale not in ("1.5x-linear", "1.5x-sharp"):
+        parser.error("--include-text requires a filtered 1.5x --display-scale")
     args.output.mkdir(parents=True, exist_ok=True)
     clang = args.toolchain / "bin/clang.exe"
     objcopy = args.toolchain / "bin/llvm-objcopy.exe"
@@ -95,6 +152,16 @@ def main():
             str(objcopy),
             "--globalize-symbol=native_lcd_span",
             "--globalize-symbol=native_picture",
+            *(
+                [
+                    "--globalize-symbol=native_text",
+                    "--globalize-symbol=c6502_glyphs",
+                    "--globalize-symbol=c6502_text_fonts",
+                    "--globalize-symbol=c6502_text_font_perf",
+                ]
+                if args.include_text
+                else []
+            ),
             str(args.runtime_object),
             str(runtime),
         ]
@@ -119,10 +186,13 @@ def main():
     scenarios = ("audit", "blit", "tile") if args.include_tiles else ("audit", "blit")
     if args.include_pictures:
         scenarios += ("picture", "picture_tile")
+    if args.include_text:
+        scenarios += TEXT_SCENARIOS
     for scenario in scenarios:
         for calls in (1, args.calls):
             stem = f"{scenario}-{calls}"
             source, elf = args.output / f"{stem}.c", args.output / f"{stem}.elf"
+            text_setup, text_declarations, text_finish = "", "", ""
             operation = (
                 "c6502_native_present(); ++completed;"
                 if scenario == "audit"
@@ -151,19 +221,66 @@ def main():
                     f"ram[0x2000+(y-{start})*{width}+k]={value}; "
                     f"native_picture({x0},{start},{x1},{end - 1},0x2000,1); ++completed;"
                 )
+            if scenario in TEXT_SCENARIOS:
+                # native_text_layer_put is inlined into native_text in release
+                # objects. Prime BOTH real glyph caches to enter the actual
+                # glyph blitter/compositor without depending on GUI firmware.
+                text_declarations = """
+extern void native_text(u8,u8,const u8*);
+extern struct { unsigned short code; u8 rows[32]; } c6502_glyphs[64];
+extern struct { unsigned short code; u8 width,status,rows[72]; } c6502_text_fonts[64];
+extern struct { u32 hits,misses,rasterized,unavailable; } c6502_text_font_perf;
+static const u8 probe_codes[4][3]={{0xd6,0xd0,0},{0xd7,0xd0,0},{'A',0,0},{'B',0,0}};
+static void prime_probe_fonts(void) {
+ u32 n,y,k,width,s,t;
+ for(n=0;n<4;++n) {
+  width=n<2?16:8; s=(probe_codes[n][0]^probe_codes[n][1])&63;
+  t=(probe_codes[n][0]^probe_codes[n][1]^width)&63;
+  c6502_glyphs[s].code=probe_codes[n][0]|((unsigned short)probe_codes[n][1]<<8);
+  c6502_text_fonts[t].code=c6502_glyphs[s].code;
+  c6502_text_fonts[t].width=width; c6502_text_fonts[t].status=1;
+  for(y=0;y<16;++y) for(k=0;k<width/8;++k)
+   c6502_glyphs[s].rows[y*(width/8)+k]=(u8)((y*17+k*43+17)^((n&1)?255:0));
+  for(y=0;y<24;++y) for(k=0;k<(width==16?3:2);++k)
+   c6502_text_fonts[t].rows[y*(width==16?3:2)+k]=(u8)((y*29+k*53+17)^((n&1)?255:0));
+ }
+}
+"""
+                text_setup = "prime_probe_fonts();"
+                index = "(i&1)" if args.changing_input else "0"
+                index = f"2+{index}" if scenario == "text12" else index
+                x, y = (9, 32) if scenario == "text12" else (7, 16)
+                operation = f"native_text({x},{y},probe_codes[{index}]); ++completed;"
+                if scenario == "text_redraw":
+                    invert = "((i&1)?255:0)" if args.changing_input else "0"
+                    operation += (
+                        "for(y=16;y<32;++y) for(k=0;k<2;++k) "
+                        f"ram[0x2000+(y-16)*2+k]=(u8)((y*17+k*31+17)^{invert}); "
+                        "native_picture(16,16,31,31,0x2000,1);"
+                    )
+                text_finish = (
+                    f"if(c6502_text_font_perf.hits!={calls} || c6502_text_font_perf.misses "
+                    "|| c6502_text_font_perf.rasterized || c6502_text_font_perf.unavailable) return 0;"
+                )
             source.write_text(
                 f"""typedef unsigned char u8; typedef unsigned long u32;
 extern struct {{ u8 *ram; }} c6502_native_state;
 extern void c6502_native_present(void);
 extern void native_lcd_span(u32,u32,u32,const u8*,u8,u8);
 extern void native_picture(u8,u8,u8,u8,unsigned short,u8);
+/* The linked runtime now contains the GUI input collector. This CPU-only
+   probe leaves input inactive and its window zero; no GUI call is allowed. */
+void *tpDL_GUITable;
 static u8 ram[32768], row[20]; static volatile u32 completed;
+{text_declarations}
 u32 probe(void) {{
     u32 i,y,k;
     c6502_native_state.ram=ram;
     for(i=0;i<20;++i) row[i]=(u8)(i*31+17);
     c6502_native_present();
+    {text_setup}
     for(i=0;i<{calls};++i) {{ {operation} }}
+    {text_finish}
     return completed;
 }}
 """,
@@ -233,7 +350,7 @@ u32 probe(void) {{
                 raise RuntimeError(f"{stem}: probe did not finish cleanly: {state}")
             expected_calls = (
                 calls
-                if scenario in ("audit", "picture", "picture_tile")
+                if scenario in ("audit", "picture", "picture_tile", *TEXT_SCENARIOS)
                 else calls * (16 if scenario == "tile" else 96)
             )
             if int(state["r"][4], 16) != expected_calls:
@@ -261,6 +378,9 @@ u32 probe(void) {{
         "runtime_object": str(args.runtime_object.resolve()),
         "display_scale": args.display_scale,
         "changing_input": args.changing_input,
+        "text_scope": "warm fixed glyph caches; no GUI font rasterization"
+        if args.include_text
+        else None,
         **{scenario: results[scenario] for scenario in scenarios},
     }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

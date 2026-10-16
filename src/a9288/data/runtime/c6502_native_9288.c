@@ -11,10 +11,16 @@
 /* DestroyMainWindow leaves queue cleanup to App_Main. Remember a close
    delivered by the release barrier: its Quit may already be consumed. */
 static c6502_u8 native_window_closed;
+#ifdef C6502_TARGET_9288T
+static c6502_u8 native_game_active;
+#endif
 
 static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
     T_GUI_WPARAM wparam, T_GUI_LPARAM lparam)
 {
+#ifdef C6502_TARGET_9288T
+    (void)c6502_native_t_key_message(message, wparam, lparam);
+#endif
 #ifdef C6502_TARGET_9288S
     if (message == MSG_LBUTTONDOWN || message == MSG_LBUTTONDBLCLK || message == MSG_LBUTTONUP ||
         message == MSG_MOUSEMOVE) {
@@ -29,7 +35,7 @@ static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
     if (message == MSG_ERASEBKGND && !c6502_native_resource_error()) return 0;
     if (message == MSG_PAINT && c6502_native_state.window == window &&
         !c6502_native_resource_error()) {
-#ifdef C6502_TARGET_9288S
+#if defined(C6502_TARGET_9288S) || defined(C6502_TARGET_9288T)
         T_GUI_HDC dc = fnGUI_BeginPaint(window);
         fnGUI_EndPaint(window, dc);
 #endif
@@ -37,13 +43,24 @@ static T_WORD native_window_proc(T_GUI_HWND window, T_WORD message,
         return 0;
     }
     if (message == MSG_CLOSE) {
+#ifdef C6502_TARGET_9288T
+        /* A GUI callback is still on a native C bridge stack. Ask that
+           bridge to unwind to App_Main before freeing host resources. */
+        if (native_game_active) {
+            c6502_native_host_stop_requested = 1u;
+            return 0;
+        }
+#endif
         if (native_window_closed) return 0;
         native_window_closed = 1u;
         c6502_native_exit_checkpoint(NATIVE_EXIT_DESTROY_WINDOW, 0u, (c6502_u32)window);
         fnGUI_DestroyMainWindow(window);
         c6502_native_exit_checkpoint(NATIVE_EXIT_DESTROY_WINDOW, 1u, (c6502_u32)window);
         c6502_native_exit_checkpoint(NATIVE_EXIT_POST_QUIT, 0u, (c6502_u32)window);
-        fnGUI_PostQuitMessage(window);
+#ifdef C6502_TARGET_9288T
+        if (!c6502_native_t_quit_received)
+#endif
+            fnGUI_PostQuitMessage(window);
         c6502_native_exit_checkpoint(NATIVE_EXIT_POST_QUIT, 1u, (c6502_u32)window);
         return 0;
     }
@@ -59,6 +76,9 @@ T_WORD App_Main(void)
     T_GUI_HWND window;
     T_GUI_MainWinCreate info;
     T_GUI_Msg message;
+#ifdef C6502_TARGET_9288T
+    int got_paint = 0;
+#endif
     volatile c6502_u8 *lcd = (volatile c6502_u8 *)0x003c0000u;
     if (!c6502_native_prepare()) {
         const char *error = c6502_native_resource_error();
@@ -88,6 +108,10 @@ T_WORD App_Main(void)
     info.iBkColor = COLOR_LIGHTWHITE;
     info.hHosting = HWND_DESKTOP;
     native_window_closed = 0u;
+#ifdef C6502_TARGET_9288T
+    native_game_active = 0u;
+    c6502_native_t_input_reset();
+#endif
     window = fnGUI_CreateMainWindow(&info);
     if (!window || window == HWND_INVALID) {
         c6502_native_release(); free(desktop); return -1;
@@ -96,8 +120,17 @@ T_WORD App_Main(void)
     while (fnGUI_GetMessage(&message, window)) {
         fnGUI_TranslateMessage(&message);
         fnGUI_DispatchMessage(&message);
-        if (message.message == MSG_PAINT) break;
+        if (message.message == MSG_PAINT) {
+#ifdef C6502_TARGET_9288T
+            got_paint = 1;
+#endif
+            break;
+        }
     }
+#ifdef C6502_TARGET_9288T
+    if (!got_paint && !native_window_closed) c6502_native_t_quit_received = 1u;
+    if (c6502_native_t_quit_received) goto release_game;
+#endif
     if (native_window_closed) goto release_game;
     (void)fnGUI_SetActiveWindow(window);
     (void)fnGUI_SetFocus(window);
@@ -115,8 +148,8 @@ T_WORD App_Main(void)
     (void)fnGUI_SetActiveWindow(window);
     (void)fnGUI_SetFocus(window);
 #endif
-    /* CTM drives gameplay; GPIO keys feed the local FIFO. Only S pumps
-       calibrated mouse events (touch coordinates are not GPIO keys). */
+    /* CTM drives gameplay. T uses GUI keyboard input; original 9288 keeps
+       GPIO polling, while S also collects calibrated touch messages. */
     /* Only used to rasterise glyphs into our explicit VirtualScr. The
        captioned client DC adds its screen origin to glyph coordinates. */
     c6502_native_state.hdc = fnGUI_GetDC(HWND_DESKTOP);
@@ -129,10 +162,31 @@ T_WORD App_Main(void)
         (void)fnGUI_SetFocus(window);
         goto finish_input;
     }
+    /* GUI timer #2 bounds IAL collection; it is not the A-series timer.
+       Drain launch keys before accepting gameplay input. */
+    if (!fnGUI_SetTimer(window, 2, 1)) {
+        static const T_BYTE error[] = "9288T input timer failed";
+        fnGUI_MessageBox(window, error, error, MB_OK);
+        c6502_native_t_host_end();
+        goto finish_input;
+    }
+    (void)fnGUI_SetTimer(window, 1, 1);
+    c6502_native_finish_input();
+    (void)fnGUI_KillTimer(window, 1);
+    if (native_window_closed || c6502_native_t_quit_received) {
+        (void)fnGUI_KillTimer(window, 2);
+        c6502_native_t_host_end();
+        goto release_game;
+    }
+    native_game_active = 1u;
 #endif
     c6502_native_present();
     c6502_native_perf_begin();
     c6502_native_enter(c6502_entry_regs);
+#ifdef C6502_TARGET_9288T
+    native_game_active = 0u;
+    (void)fnGUI_KillTimer(window, 2);
+#endif
     c6502_native_exit_begin();
 #ifdef C6502_TARGET_9288T
     c6502_native_exit_checkpoint(NATIVE_EXIT_T_HOST_RESTORE, 0u, 0u);
@@ -195,9 +249,19 @@ release_game:
     if (!native_window_closed) {
         c6502_native_exit_checkpoint(NATIVE_EXIT_CLOSE_WINDOW, 0u, (c6502_u32)window);
         fnGUI_ThrowAwayMessages(window);
-        fnGUI_PostMessage(window, MSG_CLOSE, 0, 0);
+#ifdef C6502_TARGET_9288T
+        if (c6502_native_t_quit_received) {
+            /* The collector already consumed Quit. Do not wait for a
+               second one or post another global termination event. */
+            native_window_proc(window, MSG_CLOSE, 0, 0);
+        } else
+#endif
+            fnGUI_PostMessage(window, MSG_CLOSE, 0, 0);
         c6502_native_exit_checkpoint(NATIVE_EXIT_CLOSE_WINDOW, 1u, (c6502_u32)window);
         c6502_native_exit_checkpoint(NATIVE_EXIT_DRAIN_WINDOW, 0u, (c6502_u32)window);
+#ifdef C6502_TARGET_9288T
+        if (!c6502_native_t_quit_received)
+#endif
         while (fnGUI_GetMessage(&message, window)) {
             native_dispatch_teardown(&message);
         }

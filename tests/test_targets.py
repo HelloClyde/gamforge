@@ -1,5 +1,6 @@
 """Output host selection must reach both SDK preparation and KF2 metadata."""
 
+import json
 import struct
 import tkinter as tk
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from a9288.app_options import icon_images
 from a9288.compiler.kf2 import pack_kf2, prepare_sdk_headers
 from a9288.gui import Conversion, ConverterApp
 from a9288.icons import encode_icon
-from a9288.targets import display_geometry, display_scale, target_profile
+from a9288.targets import display_filter, display_geometry, display_scale, target_profile
 
 
 @pytest.mark.parametrize(
@@ -55,7 +56,7 @@ def test_gui_target_forwarded_without_changing_resources(tmp_path):
     )
     command = conversion.command(tmp_path / "work")
     assert command[command.index("--target") + 1] == "9288t"
-    assert command[command.index("--display-scale") + 1] == "1x"
+    assert command[command.index("--display-scale") + 1] == "1.5x-sharp"
     assert "--external-resources" in command
 
 
@@ -105,9 +106,11 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
     "target,requested,expected,geometry",
     [
         ("9288", None, "2x", (318, 192, 1, 24)),
-        ("9288T", None, "1x", (159, 96, 40, 32)),
+        ("9288T", None, "1.5x-sharp", (239, 144, 0, 8)),
+        ("9288t", "1x", "1x", (159, 96, 40, 32)),
         ("9288t", "1.5x", "1.5x", (239, 144, 0, 8)),
         ("9288t", "1.5x-linear", "1.5x-linear", (239, 144, 0, 8)),
+        ("9288t", "1.5x-sharp", "1.5x-sharp", (239, 144, 0, 8)),
         ("9288s", None, "1x", (159, 96, 0, 12)),
         ("tsw600", None, "1x", (159, 96, 0, 12)),
     ],
@@ -117,13 +120,24 @@ def test_display_scale_defaults_and_geometry(target, requested, expected, geomet
     assert display_geometry(target, requested) == geometry
 
 
-@pytest.mark.parametrize("target,scale", [("9288", "1x"), ("9288t", "2x"), ("9288t", "3x")])
+@pytest.mark.parametrize(
+    "target,scale",
+    [
+        ("9288", "1x"),
+        ("9288t", "2x"),
+        ("9288t", "3x"),
+        ("9288", "1.5x-sharp"),
+        ("9288s", "1.5x-sharp"),
+        ("tsw600", "1.5x-sharp"),
+    ],
+)
 def test_reject_incompatible_scales(target, scale):
     with pytest.raises(ValueError, match="不支持画面缩放"):
         display_scale(target, scale)
 
 
-def test_gui_optional_1_5x_is_forwarded(tmp_path):
+@pytest.mark.parametrize("scale", ["1x", "1.5x", "1.5x-linear", "1.5x-sharp"])
+def test_gui_explicit_scale_is_forwarded(tmp_path, scale):
     conversion = Conversion(
         tmp_path / "g.gam",
         "游戏",
@@ -132,10 +146,59 @@ def test_gui_optional_1_5x_is_forwarded(tmp_path):
         tmp_path / "sdk",
         tmp_path / "tools",
         target="9288t",
-        display_scale="1.5x",
+        display_scale=scale,
     )
     command = conversion.command(tmp_path / "work")
-    assert command[command.index("--display-scale") + 1] == "1.5x"
+    assert command[command.index("--display-scale") + 1] == scale
+
+
+def test_sharp_default_preserves_explicit_filter_options():
+    assert display_filter("1.5x-sharp") == "area-4gray"
+    assert display_filter("1.5x-linear") == "bilinear-4gray"
+    assert display_filter("1.5x") == "nearest"
+    assert display_scale("9288t") == "1.5x-sharp"
+
+
+def test_cli_accepts_sharp_option():
+    from a9288 import cli
+
+    with (
+        patch(
+            "sys.argv",
+            ["gamforge", "game.gam", "--target", "9288t", "--display-scale", "1.5x-sharp"],
+        ),
+        patch.object(cli, "compiler_lock"),
+        patch.object(cli, "convert") as convert,
+    ):
+        cli.main()
+    assert convert.call_args.args[0].display_scale == "1.5x-sharp"
+
+
+@pytest.mark.parametrize(
+    "target,expected",
+    [("9288", "2x"), ("9288t", "1.5x-sharp"), ("9288s", "1x"), ("tsw600", "1x")],
+)
+def test_cli_omitted_scale_uses_target_default(target, expected):
+    from a9288 import cli
+
+    with (
+        patch("sys.argv", ["gamforge", "game.gam", "--target", target]),
+        patch.object(cli, "compiler_lock"),
+        patch.object(cli, "convert") as convert,
+    ):
+        cli.main()
+    args = convert.call_args.args[0]
+    assert args.display_scale is None
+    assert display_scale(args.target, args.display_scale) == expected
+
+
+def test_build_help_advertises_sharp_option(capsys):
+    from a9288.compiler import build
+
+    with patch("sys.argv", ["build", "--help"]), pytest.raises(SystemExit) as exit_info:
+        build.main()
+    assert exit_info.value.code == 0
+    assert "9288T 1.5x-sharp with crisp text" in capsys.readouterr().out
 
 
 def test_gui_remembers_t_scale_across_targets():
@@ -186,8 +249,8 @@ def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
         assert app.display_scale.get() == "2x"
         assert str(app.scale_combo.cget("state")) == "disabled"
         app.target.set("9288t")
-        assert app.display_scale.get() == "1x"
-        assert tuple(app.scale_combo.cget("values")) == ("1x", "1.5x", "1.5x-linear")
+        assert app.display_scale.get() == "1.5x-sharp"
+        assert tuple(app.scale_combo.cget("values")) == ("1x", "1.5x", "1.5x-linear", "1.5x-sharp")
         assert str(app.scale_combo.cget("state")) == "readonly"
         app.display_scale.set("1.5x")
         assert "239 × 144" in app.target_hint.cget("text")
@@ -196,12 +259,51 @@ def test_gui_scale_widget_smoke(tmp_path, monkeypatch):
         app.target.set("9288t")
         assert app.display_scale.get() == "1.5x"
         app.display_scale.set("1.5x-linear")
-        assert "四灰阶双线性放大" in app.target_hint.cget("text")
+        assert "图片四灰阶线性" in app.target_hint.cget("text")
+        assert "文字清晰点阵" in app.target_hint.cget("text")
         app.target.set("9288s")
         assert app.display_scale.get() == "1x"
         app.target.set("9288t")
         assert app.display_scale.get() == "1.5x-linear"
+        app.display_scale.set("1.5x-sharp")
+        assert "图片四灰阶锐利缩放" in app.target_hint.cget("text")
+        assert "文字清晰点阵" in app.target_hint.cget("text")
+        app.target.set("9288")
+        assert app.display_scale.get() == "2x"
+        app.target.set("9288t")
+        assert app.display_scale.get() == "1.5x-sharp"
         root.update_idletasks()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("saved", [None, "invalid", "1x", "1.5x", "1.5x-linear", "1.5x-sharp"])
+def test_gui_saved_scale_is_preserved_or_uses_new_default(tmp_path, monkeypatch, saved):
+    import a9288.gui as gui
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    root.withdraw()
+    settings_path = tmp_path / "settings.json"
+    settings = {"target": "9288t"}
+    if saved is not None:
+        settings["display_scale9288t"] = saved
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    monkeypatch.setattr(gui, "SETTINGS", settings_path)
+    try:
+        app = ConverterApp(root)
+        expected = saved if saved not in (None, "invalid") else "1.5x-sharp"
+        assert app.display_scale.get() == expected
+        app.target.set("9288")
+        assert app.display_scale.get() == "2x"
+        app.target.set("9288s")
+        assert app.display_scale.get() == "1x"
+        app.target.set("tsw600")
+        assert app.display_scale.get() == "1x"
+        app.target.set("9288t")
+        assert app.display_scale.get() == expected
     finally:
         root.destroy()
 

@@ -18,6 +18,7 @@ __pycache__/
 *.exe
 *.elf
 *.map
+/*.report.json
 *.o
 *.log
 *.ppm

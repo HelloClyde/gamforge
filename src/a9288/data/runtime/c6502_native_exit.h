@@ -15,6 +15,18 @@ static int native_is_key_message(T_WORD message)
 
 static void native_dispatch_teardown(T_GUI_Msg *message)
 {
+#ifdef C6502_TARGET_9288T
+    /* Keep host power working even in the key-release barrier. CHAR has
+       ASCII payload, not a scan code: do not mistake letter X for F12. */
+    if ((message->message == MSG_KEYDOWN || message->message == MSG_KEYUP ||
+         message->message == MSG_SYSKEYDOWN || message->message == MSG_SYSKEYUP ||
+         message->message == MSG_DT_KEYDOWN || message->message == MSG_DT_KEYUP ||
+         message->message == MSG_DT_SYSKEYDOWN || message->message == MSG_DT_SYSKEYUP) &&
+        message->wParam == SCANCODE_POWER_OFF_ON) {
+        fnGUI_DispatchMessage(message);
+        return;
+    }
+#endif
     if (native_is_key_message(message->message)) return;
     fnGUI_TranslateMessage(message);
     fnGUI_DispatchMessage(message);

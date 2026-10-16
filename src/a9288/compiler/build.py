@@ -124,6 +124,7 @@ def generate_bridges(
     external_resources: bool = False,
     crash_trace: bool = False,
     entry_offset: int = 0x46,
+    host_gui_input: bool = False,
 ) -> tuple[Path, Path]:
     if not 0x46 <= entry_offset < 0x4000:
         raise ValueError("native entry must be a GAM header code-bank offset")
@@ -239,6 +240,18 @@ def generate_bridges(
             if profile_other
             else "    call c6502_native_bridge"
         )
+        if host_gui_input:
+            # Only AFTER the C callback has returned normally: abandon the
+            # native game stack, not a live GUI/FS/heap C frame. R0 is guest
+            # scratch and restored registers/return value are still in RAM.
+            body += symbol_address("r0", "c6502_native_host_stop_requested")
+            body += [
+                "    ld.w %r0, [%r0]",
+                "    cmp %r0, 0",
+                f"    jreq .Lbridge_host_continue_{ident}",
+                "    jp c6502_native_host_abort",
+                f".Lbridge_host_continue_{ident}:",
+            ]
         return body
 
     def reload_registers() -> list[str]:
@@ -403,6 +416,12 @@ def generate_bridges(
     if external_resources:
         lines += symbol_address("r1", "c6502_resource_entry_sp")
         lines += ["    ld.w %r2, %sp", "    ld.w [%r1], %r2"]
+    if host_gui_input:
+        lines += symbol_address("r1", "c6502_native_entry_sp")
+        lines += ["    ld.w %r2, %sp", "    ld.w [%r1], %r2"]
+        # A close received during the launch barrier must not enter game.
+        lines += symbol_address("r1", "c6502_native_host_stop_requested")
+        lines += ["    ld.w %r2, [%r1]", "    cmp %r2, 0", "    jrne c6502_native_host_abort"]
     for register in range(4, 15):
         lines.append(f"    ext {register * 4}")
         lines.append(f"    ld.w %r{register}, [%r0]")
@@ -416,6 +435,19 @@ def generate_bridges(
             "c6502_native_resource_abort:",
         ]
         lines += symbol_address("r0", "c6502_resource_entry_sp")
+        lines += [
+            "    ld.w %r1, [%r0]",
+            "    ld.w %sp, %r1",
+            "    ld.w %r1, 0",
+            "    ld.w [%r0], %r1",
+        ]
+    if host_gui_input:
+        lines += [
+            "    .globl c6502_native_host_abort",
+            "    .type c6502_native_host_abort,@function",
+            "c6502_native_host_abort:",
+        ]
+        lines += symbol_address("r0", "c6502_native_entry_sp")
         lines += [
             "    ld.w %r1, [%r0]",
             "    ld.w %sp, %r1",
@@ -440,7 +472,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
-    parser.add_argument("--display-scale", choices=("1x", "1.5x", "1.5x-linear", "2x"))
+    parser.add_argument(
+        "--display-scale",
+        choices=("1x", "1.5x", "1.5x-linear", "1.5x-sharp", "2x"),
+        help="default: 9288T 1.5x-sharp with crisp text; 9288 2x; 9288S/TSW600 1x",
+    )
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -556,6 +592,7 @@ def main() -> None:
         args.external_resources,
         args.crash_trace,
         entry_offset=inspect_game(args.game)["entry"] - 0x5000,
+        host_gui_input=args.target == "9288t",
     )
     print("[GAM9288_STAGE] runtime|编译公共运行库与程序元数据", flush=True)
 
@@ -588,10 +625,12 @@ def main() -> None:
     objects = [combined]
     if args.target == "9288t":
         flags.append("-DC6502_TARGET_9288T=1")
-        if scale in ("1.5x", "1.5x-linear"):
+        if scale in ("1.5x", "1.5x-linear", "1.5x-sharp"):
             flags.append("-DC6502_T_SCALE_1_5=1")
-        if scale == "1.5x-linear":
+        if scale in ("1.5x-linear", "1.5x-sharp"):
             flags.append("-DC6502_T_FILTER_LINEAR=1")
+        if scale == "1.5x-sharp":
+            flags.append("-DC6502_T_FILTER_SHARP=1")
     elif args.target in TOUCH_TARGETS:
         flags.append("-DC6502_TARGET_9288S=1")
     if args.profile_other:

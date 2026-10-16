@@ -30,6 +30,7 @@ extern void c6502_native_present(void);
 extern void native_picture(u8,u8,u8,u8,u16,u8);
 static u8 guarded_ram[32768+64];
 void *tpDL_FSTable; /* Debug trace is inactive; firmware FS is never entered. */
+void *tpDL_GUITable; /* Input is inactive; the T GUI collector is never entered. */
 u32 probe(void) {
     u32 i;
     u8 *ram=guarded_ram+32;

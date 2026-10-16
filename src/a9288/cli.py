@@ -159,6 +159,9 @@ def convert(args) -> None:
             "screen_height": profile.height,
             "display_scale": scale,
             "display_filter": display_filter(scale),
+            "text_rendering": "native24-or-crisp-nearest"
+            if target == "9288t" and scale in ("1.5x-linear", "1.5x-sharp")
+            else "scaled-guest-bitmap",
             "display_width": view_width,
             "display_height": view_height,
             "display_x": view_x,
@@ -220,8 +223,12 @@ def main() -> None:
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
     parser.add_argument(
         "--display-scale",
-        choices=("1x", "1.5x", "1.5x-linear", "2x"),
-        help="9288T: 1x, 1.5x nearest or 1.5x-linear four-gray bilinear. 9288: 2x.",
+        choices=("1x", "1.5x", "1.5x-linear", "1.5x-sharp", "2x"),
+        help=(
+            "9288T: 1x, 1.5x nearest, 1.5x-linear smooth four-gray pictures or "
+            "1.5x-sharp sharper four-gray pictures (default); both filtered modes use crisp text. "
+            "9288: 2x. 9288S/TSW600: 1x."
+        ),
     )
     parser.add_argument("--sdk", type=Path, default=DEFAULT_SDK)
     parser.add_argument("--toolchain", type=Path, default=DEFAULT_TOOLCHAIN)

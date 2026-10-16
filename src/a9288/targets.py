@@ -21,7 +21,7 @@ TARGETS = {
     "9288": Target("9288", 320, 240, "2x", "Down_Include", 0x0008),
     # Match the program class used by the supported 9288T firmware launcher.
     # Plain SDK category 8 is insufficient for its system/program entry lookup.
-    "9288t": Target("9288T", 240, 160, "1x", "include", 0x0208),
+    "9288t": Target("9288T", 240, 160, "1.5x-sharp", "include", 0x0208),
     # The S is a distinct D300/touchscreen platform, not a resized KF2 host.
     "9288s": Target("9288S", 160, 240, "1x", "Down_Include", 0, "D300", 32),
     "tsw600": Target(
@@ -41,13 +41,16 @@ TARGETS = {
 TOUCH_TARGETS = ("9288s", "tsw600")
 DISPLAY_SCALES = {
     "9288": ("2x",),
-    "9288t": ("1x", "1.5x", "1.5x-linear"),
+    "9288t": ("1x", "1.5x", "1.5x-linear", "1.5x-sharp"),
     **{t: ("1x",) for t in TOUCH_TARGETS},
 }
 
 
 def display_filter(scale: str) -> str:
-    return "bilinear-4gray" if scale == "1.5x-linear" else "nearest"
+    return {
+        "1.5x-linear": "bilinear-4gray",
+        "1.5x-sharp": "area-4gray",
+    }.get(scale, "nearest")
 
 
 def target_profile(name: str) -> Target:
@@ -76,5 +79,6 @@ def display_geometry(target: str, requested: str | None = None) -> tuple[int, in
         "1x": (159, 96, 40, 32),
         "1.5x": (239, 144, 0, 8),
         "1.5x-linear": (239, 144, 0, 8),
+        "1.5x-sharp": (239, 144, 0, 8),
         "2x": (318, 192, 1, 24),
     }[scale]

@@ -33,6 +33,7 @@ def test_compiled_lcd_stores_cannot_bypass_mirror(tmp_path):
         ("9288t", "1x"),
         ("9288t", "1.5x"),
         ("9288t", "1.5x-linear"),
+        ("9288t", "1.5x-sharp"),
         ("9288s", "1x"),
         ("tsw600", "1x"),
     ],
@@ -60,6 +61,7 @@ def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, 
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 typedef unsigned char c6502_u8;typedef unsigned short c6502_u16;typedef unsigned c6502_u32;
 #define C6502_RAM_SIZE 32768u
 #define C6502_GAME_PHYSICAL_BASE 0x20d000u
@@ -102,6 +104,9 @@ static unsigned short stack16(unsigned *r,unsigned n){return stack8(r,n)|(stack8
 static const unsigned char* native_glyph(const unsigned char*g,unsigned char width){
  static unsigned char bits[32];for(unsigned i=0;i<32;++i)bits[i]=(g[0]+i*17)^g[1];return bits;
 }
+static int native_text_font24(const unsigned char*g,unsigned char w,const unsigned char**out){
+ (void)g;(void)w;*out=0;return 0;
+}
 """
         + perf
         + "\nstatic unsigned native_clock(void){return clock_value;}\n"
@@ -110,9 +115,23 @@ static const unsigned char* native_glyph(const unsigned char*g,unsigned char wid
 static void reference(void){
  memset(expected,255,sizeof(expected));
 #ifdef C6502_T_FILTER_LINEAR
- /* Independent 4-tap scalar oracle. Pixel-center rational coordinates,
-    clamp visible source edges, round once to the four physical levels. */
+ /* Independent scalar oracles for center-linear and footprint-area filters;
+    clamp visible source edges and round once to the four physical levels. */
  for(unsigned y=0;y<144;++y)for(unsigned x=0;x<239;++x){
+#ifdef C6502_T_FILTER_SHARP
+  /* Area oracle independent of packed triplets: intersect the destination
+     [2*x,2*x+2) footprint with source [3*s,3*s+3) cells in thirds. */
+  unsigned white_area=0;
+  for(unsigned sy=2*y/3;sy<=(2*y+1)/3;++sy)
+   for(unsigned sx=2*x/3;sx<=(2*x+1)/3;++sx){
+    unsigned left=2*x>3*sx?2*x:3*sx,right=2*x+2<3*sx+3?2*x+2:3*sx+3;
+    unsigned top=2*y>3*sy?2*y:3*sy,bottom=2*y+2<3*sy+3?2*y+2:3*sy+3;
+    unsigned cx=sx<159?sx:158,cy=sy<96?sy:95;
+    if(!(ram[lcd_address(cx/8,cy)]&(128>>(cx&7))))
+     white_area+=(right-left)*(bottom-top);
+   }
+  unsigned v=(3*white_area+2)/4;
+#else
   int nx=(int)x*4-1,ny=(int)y*4-1;
   unsigned sx=nx<0?0:(unsigned)nx/6,sy=ny<0?0:(unsigned)ny/6;
   unsigned wx=nx<0?0:(unsigned)nx%6,wy=ny<0?0:(unsigned)ny%6;
@@ -122,6 +141,7 @@ static void reference(void){
   unsigned c=(ram[lcd_address(sx/8,ty)]&(128>>(sx&7)))?0:3;
   unsigned d=(ram[lcd_address(tx/8,ty)]&(128>>(tx&7)))?0:3;
   unsigned v=(a*(6-wx)*(6-wy)+b*wx*(6-wy)+c*(6-wx)*wy+d*wx*wy+18)/36;
+#endif
   unsigned at=(y+8)*60+x/4,shift=6-2*(x%4);
   expected[at]=(expected[at]&~(3<<shift))|(v<<shift);
  }
@@ -144,6 +164,16 @@ static void reference(void){
 #endif
 #ifdef C6502_TARGET_9288S
  native_s_keyboard_paint(expected);
+#endif
+#ifdef C6502_T_FILTER_LINEAR
+ /* Independent bitwise overlay oracle; does not call the compositor. */
+ for(unsigned y=0;y<144;++y)for(unsigned x=0;x<239;++x){
+  unsigned at=y*30+x/8,bit=128>>(x&7);
+  if(native_text_mask[at]&bit){
+   unsigned out=(y+8)*60+x/4,shift=6-2*(x&3),v=(native_text_ink[at]&bit)?0:3;
+   expected[out]=(expected[out]&~(3<<shift))|(v<<shift);
+  }
+ }
 #endif
  assert(!memcmp(host_frame,expected,sizeof(expected)));
 }
@@ -315,10 +345,25 @@ int main(void){
  for(unsigned op=0;op<3;++op){horizontal_span(3,154,65,op);reference();}
  line(10,10,37,63);reference();rectangle(0,0,158,95,0);reference();rectangle_clear(0,0,158,95);reference();
  unsigned char text[]={0xd6,0xd0,'1','2',0};native_text(7,64,text);reference();
+#ifdef C6502_T_FILTER_LINEAR
+ /* A same-value unknown write must remove text provenance and re-filter. */
+ unsigned ta=lcd_address(1,66);guest_write(ta,ram[ta]);reference();
+ for(unsigned xx=12;xx<24;++xx)
+  assert(!(native_text_mask[99*30+xx/8]&(128>>(xx&7))));
+ native_text(7,64,text);reference();
+ memcpy(before,host_frame,sizeof(before));
+ for(unsigned yy=64;yy<80;++yy)horizontal_span(7,38,yy,2);
+ for(unsigned yy=64;yy<80;++yy)horizontal_span(7,38,yy,2);
+ reference();assert(!memcmp(before,host_frame,sizeof(before)));
+#endif
  /* Save reads shadow RAM; restoring mirrors back to the real surface. */
  unsigned char save_args[]={0,158,95,0,0x30};memcpy(ram+0x1800,save_args,5);r[4]=0;
  save_restore_screen(r,0);memcpy(before,host_frame,sizeof(before));rectangle(0,0,158,95,1);reference();
  save_restore_screen(r,1);reference();assert(!memcmp(before,host_frame,sizeof(before)));
+ /* SysPicture(flag=1) is the other official aligned save-buffer restore. */
+ rectangle_clear(0,0,158,95);reference();
+ native_picture(0,0,158,95,0x3000,1);reference();
+ assert(!memcmp(before,host_frame,sizeof(before)));
  assert(c6502_perf.presents==presents); /* no frame/timer flush for any drawing */
  /* Silent GUI/DMA corruption: repair compares physical bytes, not only shadow. */
  memset(host_frame+12,0,7);memset(host_frame+C6502_FRAME_STRIDE*90+9,255,24);
@@ -345,10 +390,12 @@ int main(void){
         source = "#define C6502_TARGET_9288T 1\n" + source
     elif target in ("9288s", "tsw600"):
         source = "#define C6502_TARGET_9288S 1\n" + source
-    if scale in ("1.5x", "1.5x-linear"):
+    if scale in ("1.5x", "1.5x-linear", "1.5x-sharp"):
         source = "#define C6502_T_SCALE_1_5 1\n" + source
-    if scale == "1.5x-linear":
+    if scale in ("1.5x-linear", "1.5x-sharp"):
         source = "#define C6502_T_FILTER_LINEAR 1\n" + source
+    if scale == "1.5x-sharp":
+        source = "#define C6502_T_FILTER_SHARP 1\n" + source
     definitions, source = source.split("#include <assert.h>", 1)
     source = (
         definitions
@@ -362,4 +409,6 @@ int main(void){
     subprocess.run(
         [cc, "-O2", "-Wall", "-I", str(DATA / "runtime"), str(c), "-o", str(exe)], check=True
     )
-    subprocess.run([str(exe)], check=True, timeout=90 if scale == "1.5x-linear" else 30)
+    subprocess.run(
+        [str(exe)], check=True, timeout=90 if scale in ("1.5x-linear", "1.5x-sharp") else 30
+    )

@@ -233,16 +233,23 @@ class NativeConverterTest(unittest.TestCase):
         result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
         self.assertEqual(result["target"], "9288t")
         self.assertEqual((result["screen_width"], result["screen_height"]), (240, 160))
-        self.assertEqual(result["display_scale"], "1x")
-        self.assertEqual(result["display_filter"], "nearest")
-        self.assertEqual((result["display_width"], result["display_height"]), (159, 96))
-        self.assertEqual((result["display_x"], result["display_y"]), (40, 32))
-        self.assertEqual(command[command.index("--display-scale") + 1], "1x")
+        self.assertEqual(result["display_scale"], "1.5x-sharp")
+        self.assertEqual(result["display_filter"], "area-4gray")
+        self.assertEqual(result["text_rendering"], "native24-or-crisp-nearest")
+        self.assertEqual((result["display_width"], result["display_height"]), (239, 144))
+        self.assertEqual((result["display_x"], result["display_y"]), (0, 8))
+        self.assertEqual(command[command.index("--display-scale") + 1], "1.5x-sharp")
 
     def test_9288t_linear_filter_report_and_worker_option(self):
+        self._check_9288t_filtered_report("1.5x-linear", "bilinear-4gray")
+
+    def test_9288t_sharp_filter_report_and_worker_option(self):
+        self._check_9288t_filtered_report("1.5x-sharp", "area-4gray")
+
+    def _check_9288t_filtered_report(self, scale, filter_name):
         args = self.args()
         args.target = "9288T"
-        args.display_scale = "1.5x-linear"
+        args.display_scale = scale
         stage = args.work_dir / "native-result/program.exe"
         stage.parent.mkdir(parents=True)
         for suffix in (".exe", ".elf", ".map"):
@@ -253,10 +260,11 @@ class NativeConverterTest(unittest.TestCase):
         with patch.object(driver.subprocess, "run") as run:
             driver.convert(args)
         command = run.call_args.args[0]
-        self.assertEqual(command[command.index("--display-scale") + 1], "1.5x-linear")
+        self.assertEqual(command[command.index("--display-scale") + 1], scale)
         result = json.loads(args.output.with_suffix(".report.json").read_text(encoding="utf-8"))
-        self.assertEqual(result["display_filter"], "bilinear-4gray")
-        self.assertEqual(result["display_scale"], "1.5x-linear")
+        self.assertEqual(result["display_filter"], filter_name)
+        self.assertEqual(result["display_scale"], scale)
+        self.assertEqual(result["text_rendering"], "native24-or-crisp-nearest")
         self.assertEqual((result["display_width"], result["display_height"]), (239, 144))
         self.assertEqual((result["display_x"], result["display_y"]), (0, 8))
 

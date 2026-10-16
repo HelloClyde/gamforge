@@ -1,9 +1,11 @@
-/* Optional 9288T 3:2 bilinear scaler. Packed four-grey pixels, no float,
+/* Optional 9288T 3:2 bilinear / sharp pixel-area scaler. Packed four-grey
+ * pixels, no float,
  * division or allocation in the byte kernel. Source cache is the existing
  * 1,920-byte visible-LCD cache. Preserve exact guest RAM and hidden bit.
  * LUT rounds once AFTER both dimensions, not once per separable pass. */
 #include "c6502_native_linear_lut.h"
 
+#if !defined(C6502_T_FILTER_SHARP)
 static inline __attribute__((always_inline)) c6502_u16 native_linear_sample(
     const c6502_u8 *upper, const c6502_u8 *lower, c6502_u32 x)
 {
@@ -27,6 +29,33 @@ static inline __attribute__((always_inline)) c6502_u32 native_linear_column(
         table[512u + ((v >> 2) & 255u)] |
         table[768u + (((v & 63u) << 2) | (in[1] >> 14))];
 }
+#else
+/* Sharp phase 0/2 each see just one source row; phase 1 sees two rows.
+   Neighbouring bytes have zero weight in both horizontal outer lanes. */
+static inline __attribute__((always_inline)) c6502_u32 native_sharp_single_column(
+    const c6502_u8 *source, c6502_u32 x)
+{
+    c6502_u32 bits=source[x];
+    if(x==19u) {
+        bits=(bits&0xfeu)|((bits>>1)&1u);
+        return c6502_sharp_single[bits]|0x030000u;
+    }
+    return c6502_sharp_single[bits];
+}
+
+static inline __attribute__((always_inline)) c6502_u32 native_sharp_mixed_column(
+    const c6502_u8 *upper, const c6502_u8 *lower, c6502_u32 x)
+{
+    c6502_u32 u=upper[x],l=lower[x];
+    c6502_u32 padding=0u;
+    if(x==19u) {
+        u=(u&0xfeu)|((u>>1)&1u);l=(l&0xfeu)|((l>>1)&1u);
+        padding=0x030000u;
+    }
+    return c6502_sharp_mixed[0][(u&0xf0u)|(l>>4)] |
+        c6502_sharp_mixed[1][((u&15u)<<4)|(l&15u)] | padding;
+}
+#endif
 
 static inline __attribute__((always_inline)) void native_linear_store3(
     c6502_u8 *shadow, volatile c6502_u8 *out, c6502_u32 word, c6502_u32 physical)
@@ -39,6 +68,75 @@ static inline __attribute__((always_inline)) void native_linear_store3(
     }
 }
 
+static inline __attribute__((always_inline)) void native_linear_store12(
+    c6502_u8 *shadow, volatile c6502_u8 *out,
+    c6502_u32 a,c6502_u32 b,c6502_u32 c,c6502_u32 d,c6502_u32 physical)
+{
+    c6502_u32 w0=a|(b<<24),w1=(b>>8)|(c<<16),w2=(c>>16)|(d<<8);
+    ((c6502_u32 *)shadow)[0]=w0;((c6502_u32 *)shadow)[1]=w1;
+    ((c6502_u32 *)shadow)[2]=w2;
+    if(physical) {
+        ((volatile c6502_u32 *)out)[0]=w0;
+        ((volatile c6502_u32 *)out)[1]=w1;
+        ((volatile c6502_u32 *)out)[2]=w2;
+    }
+}
+
+#if defined(C6502_T_FILTER_SHARP)
+/* The row-level text branch is outside the byte kernel. Constant text=0
+   eliminates all overlay work on bitmap-only rows; text rows merge into
+   registers before either shadow or VRAM is written, never a second pass. */
+static inline __attribute__((always_inline)) void native_sharp_store3(
+    c6502_u8 *shadow,volatile c6502_u8 *out,c6502_u32 word,
+    c6502_u32 physical,c6502_u32 dy,c6502_u32 byte,c6502_u32 text)
+{
+    if(text) word=native_text_layer_merge_word(dy,byte,word,3u);
+    native_linear_store3(shadow,out,word,physical);
+}
+
+static inline __attribute__((always_inline)) void native_sharp_store12(
+    c6502_u8 *shadow,volatile c6502_u8 *out,
+    c6502_u32 a,c6502_u32 b,c6502_u32 c,c6502_u32 d,c6502_u32 physical,
+    c6502_u32 dy,c6502_u32 byte,c6502_u32 text)
+{
+    if(text) {
+        c6502_u32 w0=native_text_layer_merge_word(dy,byte,a|(b<<24),4u);
+        c6502_u32 w1=native_text_layer_merge_word(dy,byte+4u,(b>>8)|(c<<16),4u);
+        c6502_u32 w2=native_text_layer_merge_word(dy,byte+8u,(c>>16)|(d<<8),4u);
+        ((c6502_u32 *)shadow)[0]=w0;((c6502_u32 *)shadow)[1]=w1;
+        ((c6502_u32 *)shadow)[2]=w2;
+        if(physical) {
+            ((volatile c6502_u32 *)out)[0]=w0;
+            ((volatile c6502_u32 *)out)[1]=w1;
+            ((volatile c6502_u32 *)out)[2]=w2;
+        }
+    } else native_linear_store12(shadow,out,a,b,c,d,physical);
+}
+
+/* Expand each phase once outside the loop: no per-column phase branch,
+   interleaved sample buffer, function pointer, or indirect lookup call. */
+#define NATIVE_SHARP_ROW(GET_COLUMN,TEXT) do { \
+    while((column&3u)&&remaining) { \
+        c6502_u32 word=(GET_COLUMN); \
+        native_sharp_store3(shadow,out,word,physical,dy,column*3u,TEXT); \
+        shadow+=3u;out+=3u;++column;--remaining; \
+    } \
+    while(remaining>=4u) { \
+        c6502_u32 a=(GET_COLUMN);++column; \
+        c6502_u32 b=(GET_COLUMN);++column; \
+        c6502_u32 c=(GET_COLUMN);++column; \
+        c6502_u32 d=(GET_COLUMN);++column; \
+        native_sharp_store12(shadow,out,a,b,c,d,physical,dy,(column-4u)*3u,TEXT); \
+        shadow+=12u;out+=12u;remaining-=4u;++groups; \
+    } \
+    while(remaining--) { \
+        c6502_u32 word=(GET_COLUMN); \
+        native_sharp_store3(shadow,out,word,physical,dy,column*3u,TEXT); \
+        shadow+=3u;out+=3u;++column; \
+    } \
+} while(0)
+#endif
+
 /* At most one dependent pixel beyond each horizontal byte edge. Modify
    only its two bits; do not repaint whole neighbouring source bytes. */
 static void native_linear_render_row(c6502_u32 first, c6502_u32 last,
@@ -47,11 +145,27 @@ static void native_linear_render_row(c6502_u32 first, c6502_u32 last,
 {
     const c6502_u8 *upper = c6502_previous_frame + upper_y * 20u;
     const c6502_u8 *lower = c6502_previous_frame + lower_y * 20u;
-    const c6502_u32 *table = c6502_linear_lut[phase];
     c6502_u32 offset = (C6502_VIEW_Y + dy) * C6502_FRAME_STRIDE;
     c6502_u8 *shadow = c6502_t_frame_shadow + offset + first * 3u;
     volatile c6502_u8 *out = C6502_FRAMEBUFFER + offset + first * 3u;
     c6502_u32 column = first, count = last - first + 1u, remaining = count, groups = 0u;
+#if defined(C6502_T_FILTER_SHARP)
+    if(phase==1u) {
+        if(native_text_rows[dy]) {
+            NATIVE_SHARP_ROW(native_sharp_mixed_column(upper,lower,column),1u);
+        } else {
+            NATIVE_SHARP_ROW(native_sharp_mixed_column(upper,lower,column),0u);
+        }
+    } else {
+        const c6502_u8 *source=phase==0u?lower:upper;
+        if(native_text_rows[dy]) {
+            NATIVE_SHARP_ROW(native_sharp_single_column(source,column),1u);
+        } else {
+            NATIVE_SHARP_ROW(native_sharp_single_column(source,column),0u);
+        }
+    }
+#else
+    const c6502_u32 *table = c6502_linear_lut[phase];
     c6502_u16 samples[22];
     const c6502_u16 *in = samples + 1u;
     c6502_u32 i;
@@ -76,15 +190,7 @@ static void native_linear_render_row(c6502_u32 first, c6502_u32 last,
         c6502_u32 b = native_linear_column(in+1u, table);
         c6502_u32 c = native_linear_column(in+2u, table);
         c6502_u32 d = native_linear_column(in+3u, table);
-        c6502_u32 w0 = a | (b << 24), w1 = (b >> 8) | (c << 16);
-        c6502_u32 w2 = (c >> 16) | (d << 8);
-        ((c6502_u32 *)shadow)[0] = w0; ((c6502_u32 *)shadow)[1] = w1;
-        ((c6502_u32 *)shadow)[2] = w2;
-        if (physical) {
-            ((volatile c6502_u32 *)out)[0] = w0;
-            ((volatile c6502_u32 *)out)[1] = w1;
-            ((volatile c6502_u32 *)out)[2] = w2;
-        }
+        native_linear_store12(shadow,out,a,b,c,d,physical);
         shadow += 12u; out += 12u; in += 4u; column += 4u; remaining -= 4u; ++groups;
     }
     while (remaining--) {
@@ -102,16 +208,36 @@ static void native_linear_render_row(c6502_u32 first, c6502_u32 last,
         shadow[-1] |= 3u;
         if (physical) out[-1] = shadow[-1];
     }
+#endif
     ++c6502_perf.linear_rows;
     c6502_perf.t_packed_groups += groups;
-    if (physical) c6502_perf.framebuffer_bytes += count * 3u + (first != 0u) + (last < 19u);
+    if (physical) c6502_perf.framebuffer_bytes += count * 3u
+#if !defined(C6502_T_FILTER_SHARP)
+        + (first != 0u) + (last < 19u)
+#endif
+        ;
+#if !defined(C6502_T_FILTER_SHARP)
+    if(native_text_rows[dy]) native_text_layer_apply(first,last,dy,physical);
+#endif
 }
+#if defined(C6502_T_FILTER_SHARP)
+#undef NATIVE_SHARP_ROW
+#endif
 
 /* Only inside a proven disjoint bitmap / snapshotted glyph call. Guest RAM
    still changes in the original order, but shared filter rows are resolved
    once before that call returns, never deferred to present/game-frame. */
 static c6502_u32 native_linear_depth, native_linear_first, native_linear_last;
 static c6502_u32 native_linear_top, native_linear_bottom;
+
+static void native_linear_touch(c6502_u32 first,c6502_u32 last,
+    c6502_u32 top,c6502_u32 bottom)
+{
+    if(first<native_linear_first) native_linear_first=first;
+    if(last>native_linear_last) native_linear_last=last;
+    if(top<native_linear_top) native_linear_top=top;
+    if(bottom>native_linear_bottom) native_linear_bottom=bottom;
+}
 
 static void native_linear_begin(void)
 {
@@ -125,9 +251,14 @@ static void native_linear_end(void)
 {
     c6502_u32 first_y, last_y, pair, dy;
     if (--native_linear_depth || native_linear_first == 20u) return;
+#if defined(C6502_T_FILTER_SHARP)
+    first_y = native_linear_top * 3u / 2u;
+    last_y = native_linear_bottom * 3u / 2u + 1u;
+#else
     first_y = (native_linear_top * 3u + 1u) / 2u;
     if (first_y) --first_y;
     last_y = (native_linear_bottom * 3u + 1u) / 2u + 1u;
+#endif
     if (last_y > 143u) last_y = 143u;
     dy = (first_y / 3u) * 3u;
     for (pair = (first_y / 3u) * 2u; dy <= last_y; pair += 2u, dy += 3u) {
@@ -153,11 +284,24 @@ static void native_t_write_span(c6502_u32 first, c6502_u32 last,
     c6502_u8 *previous = c6502_previous_frame + y * 20u;
     c6502_u32 x, low = 20u, high = 0u, other = y+1u < 96u ? y+1u : y;
     c6502_u32 before = y ? y-1u : y, dy = (y >> 1) * 3u;
-    for (x = first; x <= last; ++x) {
-        c6502_u8 bits = source[x-first];
-        if (x == 19u) bits &= 0xfeu;
-        if (bits != previous[x]) {
-            previous[x] = bits; if (low == 20u) low = x; high = x;
+    if (!native_text_pending) {
+        /* Common bitmap-only path: no text metadata traffic per byte. */
+        for (x = first; x <= last; ++x) {
+            c6502_u8 bits = source[x-first];
+            if (x == 19u) bits &= 0xfeu;
+            if (bits != previous[x]) {
+                previous[x] = bits; if (low == 20u) low = x; high = x;
+            }
+        }
+    } else {
+        c6502_u8 *dirty = native_text_layer_dirty + y * 20u;
+        for (x = first; x <= last; ++x) {
+            c6502_u8 bits = source[x-first];
+            if (x == 19u) bits &= 0xfeu;
+            if (bits != previous[x] || dirty[x]) {
+                previous[x] = bits; if (low == 20u) low = x; high = x;
+                if(dirty[x]) { dirty[x]=0u; --native_text_pending; }
+            }
         }
     }
     if (low == 20u) { ++c6502_perf.linear_unchanged_spans; return; }
@@ -169,13 +313,17 @@ static void native_t_write_span(c6502_u32 first, c6502_u32 last,
         return;
     }
     if (!(y & 1u)) {
+#if !defined(C6502_T_FILTER_SHARP)
         if (y) native_linear_render_row(low, high, dy-1u, before, y, 2u, 1u);
+#endif
         native_linear_render_row(low, high, dy, before, y, 0u, 1u);
         native_linear_render_row(low, high, dy+1u, y, other, 1u, 1u);
     } else {
         native_linear_render_row(low, high, dy+1u, before, y, 1u, 1u);
         native_linear_render_row(low, high, dy+2u, y, other, 2u, 1u);
+#if !defined(C6502_T_FILTER_SHARP)
         if (y < 95u) native_linear_render_row(low, high, dy+3u, y, other, 0u, 1u);
+#endif
     }
 }
 
@@ -190,7 +338,7 @@ static void native_t_write_byte(c6502_u32 x, c6502_u32 y, c6502_u8 bits)
 static c6502_u32 native_linear_update_shadow(const c6502_u8 *ram)
 {
     c6502_u8 dirty[144];
-    c6502_u32 y, x, changed = 0u;
+    c6502_u32 y, x, changed = 0u, text_discarded = 0u;
     for (y = 0u; y < 144u; ++y) dirty[y] = 0u;
     if (!c6502_frame_valid) {
         c6502_u32 *words = (c6502_u32 *)c6502_t_frame_shadow;
@@ -200,17 +348,46 @@ static c6502_u32 native_linear_update_shadow(const c6502_u8 *ram)
         c6502_u8 *previous = c6502_previous_frame + y * 20u;
         c6502_u32 modified = !c6502_frame_valid, dy = (y*3u+1u)/2u;
         c6502_u32 base = lcd_address(2u, y) - 2u;
-        for (x = 0u; x < 20u; ++x) {
-            c6502_u8 bits = ram[x < 2u ? lcd_address(x,y) : base+x];
-            if (x == 19u) bits &= 0xfeu;
-            modified |= bits != previous[x]; previous[x] = bits;
+        if (!native_text_active_rows && !native_text_pending) {
+            for (x = 0u; x < 20u; ++x) {
+                c6502_u8 bits = ram[x < 2u ? lcd_address(x,y) : base+x];
+                if (x == 19u) bits &= 0xfeu;
+                modified |= bits != previous[x]; previous[x] = bits;
+            }
+        } else {
+            c6502_u8 *text_dirty = native_text_layer_dirty + y * 20u;
+            for (x = 0u; x < 20u; ++x) {
+                c6502_u8 bits = ram[x < 2u ? lcd_address(x,y) : base+x];
+                if (x == 19u) bits &= 0xfeu;
+                /* A raw copy/scroll bypassed the tracked LCD writers. A
+                   24-dot stroke can be black where its 16-dot source is
+                   white, so changed-bit invalidation can leave ghost text.
+                   Fall back to the complete guest bitmap for this audit. */
+                if(bits != previous[x] && native_text_active_rows) {
+                    native_text_layer_discard();
+                    text_discarded=1u;
+                }
+                modified |= bits != previous[x] || text_dirty[x];
+                if(text_dirty[x]) { text_dirty[x]=0u; --native_text_pending; }
+                previous[x] = bits;
+            }
         }
         if (modified) {
             ++changed;
+#if defined(C6502_T_FILTER_SHARP)
+            /* Area coverage touches floor(3*y/2) and its successor only. */
+            dy=y*3u/2u;
+            dirty[dy]=dirty[dy+1u]=1u;
+#else
             if (dy) dirty[dy-1u] = 1u;
             if (dy < 144u) dirty[dy] = 1u;
             if (dy+1u < 144u) dirty[dy+1u] = 1u;
+#endif
         }
+    }
+    if(text_discarded) {
+        changed=96u;
+        for(y=0u;y<144u;++y) dirty[y]=1u;
     }
     for (y = 0u; y < 144u; ++y) if (dirty[y]) {
         c6502_u32 pair = (y/3u)*2u, phase = y%3u, top, bottom;

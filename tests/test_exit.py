@@ -164,9 +164,10 @@ int main(void){
 
 def test_exit_order_and_launcher_filter_are_kept():
     app = (DATA / "runtime/c6502_native_9288.c").read_text(encoding="utf-8")
-    # S alone needs a bounded touch collector, not a guest game timer.
-    # Keep the original 9288/T private-polling lifecycle assertions.
+    # S collects touch; T collects GUI keyboard input. Original 9288 keeps
+    # its private-polling lifecycle and no gameplay GUI timer.
     app = re.sub(r"#ifdef C6502_TARGET_9288S\n.*?#endif\n", "", app, flags=re.S)
+    app = re.sub(r"#ifdef C6502_TARGET_9288T\n.*?#endif\n", "", app, flags=re.S)
     exit_path = app.split("c6502_native_enter(c6502_entry_regs);", 1)[1]
     assert "fnGUI_SetTimer" not in app.split("c6502_native_enter(c6502_entry_regs);", 1)[0]
     assert exit_path.index("fnGUI_SetTimer") < exit_path.index("c6502_native_finish_input();")
@@ -198,6 +199,8 @@ typedef unsigned c6502_u32,T_WORD,T_GUI_HWND,T_GUI_HDC,T_GUI_WPARAM,T_GUI_LPARAM
 #define C6502_HOST_FRAME_BYTES 9600u
 #include "c6502_native_lifecycle.h"
 enum {MSG_ERASEBKGND=1,MSG_PAINT=2,MSG_CLOSE=3,MSG_TIMER=4,
+ MSG_KEYDOWN=20,MSG_KEYUP=22,MSG_SYSKEYDOWN=23,MSG_SYSKEYUP=25,
+ MSG_DT_KEYUP=92,MSG_DT_SYSKEYDOWN=93,SCANCODE_POWER_OFF_ON=88,
  MSG_FIRSTKEYMSG=20,MSG_LASTKEYMSG=30,MSG_DT_KEYOFF=70,MSG_DT_KEYDOWN=90,MSG_DT_SYSKEYUP=100,
  HWND_DESKTOP=0,HWND_INVALID=0xffffffffu,WS_VISIBLE=1,WS_CAPTION=2,
  COLOR_LIGHTWHITE=3,SW_SHOWNORMAL=1,MB_OK=1};
@@ -206,6 +209,11 @@ typedef struct {unsigned dwStyle,dwExStyle;const unsigned char*spCaption;
  unsigned rx,by,iBkColor,hHosting;} T_GUI_MainWinCreate;
 typedef struct {unsigned message,hWnd,wParam,lParam;} T_GUI_Msg;
 static struct {unsigned window,hdc;} c6502_native_state;
+static unsigned c6502_native_host_stop_requested,c6502_native_t_quit_received;
+static void c6502_native_t_input_reset(void){c6502_native_host_stop_requested=c6502_native_t_quit_received=0;}
+static int c6502_native_t_key_message(unsigned m,unsigned k,unsigned flags){return 0;}
+static unsigned fnGUI_BeginPaint(unsigned w){return 88;}
+static void fnGUI_EndPaint(unsigned w,unsigned dc){}
 static unsigned c6502_entry_regs[15];
 static unsigned scenario,destroys,cleanups,posts,quits,game_enters,releases,
  gets,finish_calls,timer_starts,timer_stops,frees,show_calls,host_starts,host_stops,dialogs;
@@ -233,13 +241,14 @@ static void fnGUI_PostMessage(unsigned w,unsigned m,unsigned wp,unsigned lp){
 static int fnGUI_GetMessage(T_GUI_Msg*m,unsigned w){
  assert(w==77); /* NEVER dispatch the launcher's queue on our application stack. */
  if(quits){--quits;return 0;}++gets;assert(gets<5);
+ if(scenario==10 && gets==1)return 0; /* Quit before first paint */
  m->hWnd=w;m->wParam=m->lParam=0;
  m->message=gets==1?(scenario==3?MSG_CLOSE:MSG_PAINT):MSG_CLOSE;return 1;}
 static void fnGUI_TranslateMessage(T_GUI_Msg*m){}
 static void fnGUI_DispatchMessage(T_GUI_Msg*m){callback(m->hWnd,m->message,m->wParam,m->lParam);}
 #include "c6502_native_exit.h"
-static int fnGUI_SetTimer(unsigned w,unsigned id,unsigned period){assert(w==77 && id==1);++timer_starts;return 1;}
-static int fnGUI_KillTimer(unsigned w,unsigned id){assert(w==77 && id==1);++timer_stops;return 1;}
+static int fnGUI_SetTimer(unsigned w,unsigned id,unsigned period){assert(w==77 && (id==1 || id==2));++timer_starts;return 1;}
+static int fnGUI_KillTimer(unsigned w,unsigned id){assert(w==77 && (id==1 || id==2));++timer_stops;return 1;}
 static void fnGUI_MessageBox(unsigned w,const unsigned char*t,const unsigned char*b,unsigned style){
  assert((scenario==5 || scenario==6) && w==77);++dialogs;
  if(scenario==6){callback(w,MSG_CLOSE,0,0);quits=0;}}
@@ -247,11 +256,13 @@ static void c6502_native_present(void){memset(framebuffer,0,sizeof(framebuffer))
 static void c6502_native_perf_begin(void){}
 static void c6502_native_perf_end(void){assert(host_stops==1);}
 static int c6502_native_t_host_begin(void){++host_starts;return scenario!=5 && scenario!=6;}
-static void c6502_native_t_host_end(void){assert(game_enters==1 && !timer_starts);++host_stops;}
-static void c6502_native_enter(unsigned*r){++game_enters;}
+static void c6502_native_t_host_end(void){assert((game_enters==1 || scenario==7) && timer_starts==timer_stops);++host_stops;}
+static void c6502_native_enter(unsigned*r){++game_enters;
+ if(scenario==8){callback(77,MSG_CLOSE,0,0);assert(!destroys && c6502_native_host_stop_requested);}
+ if(scenario==9){c6502_native_host_stop_requested=c6502_native_t_quit_received=1;}}
 static void c6502_native_finish_input(void){
  ++finish_calls;
- if(scenario==1 || scenario==2){
+ if((game_enters && (scenario==1 || scenario==2)) || (scenario==7 && finish_calls==1)){
   callback(77,MSG_CLOSE,0,0);assert(quits==1);quits=0; /* barrier consumed Quit */
   if(scenario==2)callback(77,MSG_CLOSE,0,0); /* repeated CLOSE is idempotent */
  }
@@ -262,7 +273,7 @@ static void logged_free(void*p){++frees;free(p);}
 """
         + app
         + r"""
-int main(void){for(scenario=0;scenario<7;++scenario){
+int main(void){for(scenario=0;scenario<11;++scenario){
  destroys=cleanups=posts=quits=game_enters=releases=gets=finish_calls=0;
  timer_starts=timer_stops=frees=show_calls=0;
  host_starts=host_stops=dialogs=0;
@@ -272,11 +283,11 @@ int main(void){for(scenario=0;scenario<7;++scenario){
  for(unsigned i=0;i<sizeof(framebuffer);++i)assert(framebuffer[i]==0xa5);
  if(scenario==4){assert(returned==(unsigned)-1 && !destroys && !cleanups && !show_calls);continue;}
  assert(returned==0 && destroys==1 && cleanups==1 && !quits);
- assert(game_enters==((scenario==3 || scenario==5 || scenario==6)?0:1));
- assert(host_starts==(scenario==3?0:1) && host_stops==game_enters);
+ assert(game_enters==((scenario==3 || scenario==5 || scenario==6 || scenario==7 || scenario==10)?0:1));
+ assert(host_starts==((scenario==3 || scenario==10)?0:1) && host_stops==game_enters+(scenario==7));
  assert(dialogs==((scenario==5 || scenario==6)?1:0));
- assert(posts==((scenario==0 || scenario==5)?1:0)); /* Never close a window twice. */
- assert(timer_starts==timer_stops && finish_calls==((scenario==3 || scenario==6)?0:1));
+ assert(posts==((scenario==0 || scenario==5 || scenario==8)?1:0)); /* Never close a window twice. */
+ assert(timer_starts==timer_stops && finish_calls==((scenario==3 || scenario==6 || scenario==10)?0:(scenario==5 || scenario==7)?1:2));
  }return 0;}
 """,
     )

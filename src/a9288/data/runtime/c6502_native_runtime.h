@@ -43,6 +43,10 @@ void c6502_native_finish_input(void);
 #ifdef C6502_TARGET_9288T
 int c6502_native_t_host_begin(void);
 void c6502_native_t_host_end(void);
+extern volatile c6502_u32 c6502_native_host_stop_requested;
+extern c6502_u8 c6502_native_t_quit_received;
+void c6502_native_t_input_reset(void);
+int c6502_native_t_key_message(T_WORD message, T_GUI_WPARAM key, T_GUI_LPARAM flags);
 #endif
 #ifdef C6502_TARGET_9288S
 void c6502_native_pointer(T_WORD message, T_GUI_LPARAM lparam);

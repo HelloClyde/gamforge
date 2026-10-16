@@ -111,6 +111,9 @@ static void menu_run(c6502_u32 *r, c6502_u16 menu, c6502_u16 env)
     for (;;) {
         c6502_u32 previous = selected, previous_start = start;
         c6502_u8 type, key = translate_key(native_window_key(1), &type);
+#ifdef C6502_TARGET_9288T
+        if (c6502_native_host_stop_requested) { result = 0xffu; break; }
+#endif
         native_update_timer();
         c6502_timer_pending = 0u;
         c6502_native_state.ram[0x201eu] &= 0xfeu;
