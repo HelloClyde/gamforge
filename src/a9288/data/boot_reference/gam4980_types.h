@@ -11,11 +11,17 @@ typedef signed short s16;
 typedef signed int s32;
 #endif
 
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
+/* LP64 Unix uses unsigned long for uint64_t; reuse the host's definitions
+ * instead of conflicting with stdint.h in the snapshot export program. */
+#include <stdint.h>
+#else
 typedef unsigned char uint8_t;
 typedef signed char int8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
+#endif
 
 #ifndef __cplusplus
 typedef int gam4980_bool_t;
