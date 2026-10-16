@@ -1,5 +1,17 @@
 # 更新记录
 
+## 未发布
+
+### macOS 宿主支持
+
+- 新增 Apple Silicon / Intel 原生 `.app` 和命令行 ZIP 构建，包含 Python/Tk/Pillow、本机启动 helper；不依赖 Wine，不使用 Windows 工具假冒 Mac 后端。
+- 配置、工作目录与冻结 worker 适配 macOS；全套依赖内置 `.app/Contents/Resources/dependencies`，移动应用后仍可定位，生成内容不写签名应用内部。
+- S1C33 工具链增加两种 Mac 原生构建和编译/链接验证；完整分发支持授权 SDK、固件和同架构工具链，保留执行权限、框架符号链接及依赖哈希。
+- CI 增加两架构 macOS 测试、Tk 与解压冻结 GUI 烟雾检查、helper/worker 自检；tag 发布等待 Windows 和两个 Mac 构建全部成功。
+- Tcl/Tk 许可按实际运行版本匹配官方 release tag，记录文本 SHA-256 与来源并在打包时复核，避免依赖不完整的本地安装或混入其他版本的许可。
+- 当前 Mac 包仅计划 ad-hoc 签名，未经过 Apple 公证；补充单应用安全放行说明，不关闭全局安全保护。
+- **这些构建与检查尚待 Mac runner 实际运行；本轮不代表已有 Mac Release、全套转换或 BBK 真机验证。** 现有 v1.4.0 资产不变。
+
 ## 1.4.0 — 2026-10-16
 
 ### 9288T 显示与输入

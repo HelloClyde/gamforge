@@ -1,15 +1,23 @@
 name: Build S1C33 toolchain
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   toolchain:
-    runs-on: windows-2022
-    timeout-minutes: 180
-    defaults:
-      run:
-        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            host: windows-x64
+          - os: macos-15
+            host: macos-arm64
+          - os: macos-15-intel
+            host: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -17,15 +25,47 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -e . ninja cmake
+      - run: python -m pip install -e . ninja 'cmake>=3.20,<4'
+      - name: Reuse pinned native tools (hashes and executable probes are still checked)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: dist/s1c33-9288-toolchain-${{ matrix.host }}
+          key: s1c33-${{ matrix.os }}-${{ matrix.host }}-min11-v1-${{ hashFiles('toolchain/manifest.json', 'toolchain/*.patch', 'scripts/build_toolchain.py') }}
       - name: Build with the runner's MSVC x64 environment
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
-          python scripts/build_toolchain.py --jobs 2
+          python scripts/build_toolchain.py --jobs 2 --expect-host windows-x64 --reuse
+      - name: Build native macOS compiler with AppleClang
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python scripts/build_toolchain.py --jobs 2 --expect-host '${{ matrix.host }}' --deployment-target 11.0 --reuse
+      - name: Verify extracted native macOS toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 -c 's1c33-9288-toolchain-${{ matrix.host }}.zip.sha256'
+          unzip -q 's1c33-9288-toolchain-${{ matrix.host }}.zip' -d "$RUNNER_TEMP/toolchain-validation"
+          cd ..
+          python scripts/build_toolchain.py --expect-host '${{ matrix.host }}' --verify-only "$RUNNER_TEMP/toolchain-validation/s1c33-9288-toolchain-${{ matrix.host }}"
+      - name: Verify extracted Windows toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = 'dist/s1c33-9288-toolchain-windows-x64.zip'
+          $expected = (Get-Content "$archive.sha256").Split(' ')[0]
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA256 mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath "$env:RUNNER_TEMP/toolchain-validation"
+          python scripts/build_toolchain.py --expect-host windows-x64 --verify-only "$env:RUNNER_TEMP/toolchain-validation/s1c33-9288-toolchain-windows-x64"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: s1c33-9288-toolchain-windows-x64
-          path: dist/s1c33-9288-toolchain.zip
+          name: s1c33-9288-toolchain-${{ matrix.host }}
+          path: |
+            dist/s1c33-9288-toolchain-${{ matrix.host }}.zip
+            dist/s1c33-9288-toolchain-${{ matrix.host }}.zip.sha256
           if-no-files-found: error

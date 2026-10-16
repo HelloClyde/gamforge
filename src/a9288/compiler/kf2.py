@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import struct
+import sys
 from pathlib import Path
 
 from a9288.paths import DATA
@@ -62,16 +63,25 @@ def prepare_sdk_headers(sdk: Path, destination: Path, *, target: str = "9288") -
             write_sdk_header(destination / variant, data)
 
 
-def find_tool(toolchain: Path, name: str) -> str:
-    candidates = (
-        toolchain / name,
-        toolchain / f"{name}.exe",
-        toolchain / "bin" / name,
-        toolchain / "bin" / f"{name}.exe",
+def tool_candidates(toolchain: Path, name: str) -> tuple[Path, ...]:
+    """Host executables, not the identically named BBK output EXEs."""
+    names = (name + ".exe", name) if sys.platform == "win32" else (name,)
+    return tuple(
+        folder / filename for folder in (toolchain, toolchain / "bin") for filename in names
     )
-    for candidate in candidates:
+
+
+def find_tool(toolchain: Path, name: str) -> str:
+    for candidate in tool_candidates(toolchain, name):
         if candidate.is_file():
             return str(candidate)
+    if sys.platform != "win32" and any(
+        (folder / (name + ".exe")).is_file() for folder in (toolchain, toolchain / "bin")
+    ):
+        raise SystemExit(
+            f"{name}: this directory contains a Windows toolchain; "
+            "select a native S1C33 toolchain built for this host/CPU"
+        )
     found = shutil.which(name)
     if found:
         return found

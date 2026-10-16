@@ -27,6 +27,10 @@ def main():
         from a9288.selftest import main as selftest
 
         return selftest()
+    if args == ["--gui-smoke-test"]:
+        from a9288.selftest import gui_smoke_test
+
+        return gui_smoke_test()
     if args[:1] == ["trace"]:
         from a9288.crash_trace import main as trace
 

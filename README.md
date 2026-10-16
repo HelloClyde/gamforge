@@ -13,7 +13,7 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 a
 
 把 A 系列 C6502 `.gam` 游戏在 **PC 上离线翻译为 S1C33 原生程序**，
 封装为独立 EXE：9288/T 使用 KF2，9288S / 听说王600 使用 D300。
-安装分类为“娱乐”，听说王600 为“游戏”。提供 Windows 图形界面和命令行工具。
+安装分类为“娱乐”，听说王600 为“游戏”。提供 Windows / macOS 图形界面和命令行工具。
 
 > 当前是实验性编译器，不是“任意 GAM 均兼容”的成品。编译成功不代表全流程或
 > 真机性能已经验证。输出不是 Windows EXE，也不是携带游戏的播放器。
@@ -57,6 +57,18 @@ v1.3.0 起全套包包含四个输出目标所需依赖；v1.2.0 支持 9288 / 9
 `.report.json`。单文件模式真机只需 EXE；外置模式还需配套 RES。
 工作目录默认 `%LOCALAPPDATA%\A9288\work`。
 
+### macOS（新增，待原生 CI 验证和发布）
+
+新增 Apple Silicon（`arm64`）和 Intel（`x86_64`）两套原生构建，均提供
+`GAMForge.app` 和 `GAMForge-CLI`，不依赖 Wine。**现有 v1.4.0 Release 仍是
+Windows 包，新增 Mac 构建尚未发布，不要把 Windows ZIP 改名为 Mac 版。**
+
+Mac 构建与源码运行方法见 [macOS 使用与打包](docs/macos.md)。轻量包包含
+Python/Tk/Pillow 和本机启动 helper；转换还需对应 SDK、A 系列固件，以及
+**Mac 原生的定制 S1C33 工具链**，不能使用 Windows `.exe` 或 Apple 自带 Clang 替代。
+提供授权全套打包入口，但全套 Mac ZIP 必须在对应架构 Mac 上实际构建、转换验证后才发布。
+Mac 配置与工作目录位于 `~/Library/Application Support/GAMForge/`，不会写入 `.app`。
+
 ### EXE＋外置资源文件（v1.1.0 新增）
 
 在转换界面勾选 **EXE＋外置资源文件**，或在下方命令末尾添加
@@ -76,7 +88,8 @@ RES 包含游戏数据，和游戏 EXE 一样不应提交到本项目仓库或�
 
 ## 开发与命令行
 
-需要 Python 3.11+；源码运行还需要 Tkinter、PC GCC。Windows 分发包自带预编译 PC helper。
+需要 Python 3.11+；源码运行还需要 Tkinter、PC C 编译器（Windows/Linux GCC，macOS Clang）。
+冻结分发包自带本机预编译 PC helper。以下为 Windows 命令；[Mac 命令](docs/macos.md#从源码运行)单独说明。
 
 ```powershell
 python -m venv .venv
@@ -181,20 +194,23 @@ src/a9288/
     c6502_symbols.json  开发包中的函数名/地址事实表
 tests/               无游戏单元测试、可选固件等价测试
 scripts/             打包、分发校验与依赖构建
-packaging/           Windows 冻结配置和启动入口
+packaging/           Windows / macOS 冻结配置和启动入口
 toolchain/           固定版本与 9288 ABI 补丁
 docs/                架构、兼容性、发布和维护说明
-.github/workflows/   CI、Windows 构建、tag 发布
+.github/workflows/   CI、Windows / macOS 原生构建、tag 发布
 ```
 
 ## CI 与发布
 
-- push 到 `main`、PR 或手动触发 **Build**：测试、代码检查、构建 Windows 分发包和 SHA-256 校验文件。
-- 推送 `v*` tag：同一套检查与构建通过后自动创建 GitHub Release 并上传 ZIP、校验文件。
+- push 到 `main`、PR 或手动触发 **Build**：测试、代码检查，分别构建 Windows x64、macOS arm64 / x86_64 轻量分发包和 SHA-256 校验文件。
+- Mac job 在对应架构 Mac runner 上测试本机 helper、Tk 窗口、冻结 worker 和解压后的 GUI；没有 Mac 上的成功日志不能称为构建通过。
+- 推送 `v*` tag：三个平台的同一套检查与构建全部通过后自动创建 GitHub Release 并上传 ZIP、校验文件。
 - release 使用严格的 tag/版本一致性检查；普通 PR 没有发布权限。
 - LLVM 工具链使用独立的手动构建 workflow，固定源代码提交并应用仓库中的 ABI 补丁。
 
-本地构建：`python scripts/build_windows.py`。发布约定详见 [发布流程](docs/releasing.md)。
+Windows 本地构建：`python scripts/build_windows.py`；Mac 使用 `python scripts/build_macos.py`，
+必须在对应架构宿主执行。默认 CI 不打包 SDK/固件，授权全套版需单独组装与隔离转换验证。
+发布约定详见 [发布流程](docs/releasing.md)及 [Mac 发布检查](docs/macos.md#维护者打包)。
 
 ## 兼容性与原理
 

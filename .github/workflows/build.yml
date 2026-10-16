@@ -86,10 +86,136 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  macos:
+    name: macOS portable application (${{ matrix.architecture }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+            python-architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+            python-architecture: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python-architecture }}
+          cache: pip
+      - name: Verify native host and Tk window support
+        run: |
+          set -euo pipefail
+          xcrun --find clang
+          python - <<'PY'
+          import os
+          import platform
+          import tkinter as tk
+          assert platform.system() == 'Darwin'
+          assert platform.machine() == os.environ['EXPECTED_ARCHITECTURE']
+          window = tk.Tk()
+          window.withdraw()
+          tk.Label(window, text='GAMForge · 原生转换').pack()
+          window.update()
+          print(platform.platform(), 'Tcl', window.tk.call('info', 'patchlevel'),
+                'Tk', window.tk.call('package', 'require', 'Tk'))
+          window.destroy()
+          PY
+      - name: Collect notices for the actual Tcl and Tk runtime versions
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import re
+          import tkinter as tk
+          from urllib.request import urlopen
+
+          window = tk.Tk()
+          window.withdraw()
+          versions = {
+              'tcl': str(window.tk.call('info', 'patchlevel')),
+              'tk': str(window.tk.call('package', 'require', 'Tk')),
+          }
+          window.destroy()
+          destination = Path('build/license-input')
+          destination.mkdir(parents=True, exist_ok=True)
+          manifest = {'schema': 1}
+          for component, version in versions.items():
+              if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+                  raise RuntimeError(f'Unsupported {component} release tag: {version}')
+              tag = 'core-' + version.replace('.', '-')
+              url = f'https://raw.githubusercontent.com/tcltk/{component}/{tag}/license.terms'
+              with urlopen(url, timeout=30) as response:
+                  data = response.read(131073)
+              if not data or len(data) > 131072 or 'copyright' not in data.decode('utf-8').lower():
+                  raise RuntimeError(f'Unexpected license text: {url}')
+              filename = component + '-license.terms'
+              (destination / filename).write_bytes(data)
+              manifest[component] = {
+                  'version': version, 'source_url': url, 'path': filename,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+              }
+          (destination / 'TCLTK-NOTICES.json').write_text(
+              json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(manifest, indent=2))
+          PY
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest --junitxml=build/macos-test-results.xml
+      - name: Build native app, helper and CLI; run frozen self-tests
+        run: |
+          python scripts/build_macos.py \
+            --architecture "$EXPECTED_ARCHITECTURE" \
+            --minimum-macos 11.0 \
+            --tk-notices-manifest build/license-input/TCLTK-NOTICES.json \
+            --dist-dir "dist/mac-$EXPECTED_ARCHITECTURE" \
+            --work-dir "build/pyinstaller-$EXPECTED_ARCHITECTURE"
+      - name: Test frozen GUI window and icon preview
+        env:
+          A9288_USER_DATA: ${{ runner.temp }}/gamforge-gui-smoke
+        run: |
+          set -euo pipefail
+          package_dir="dist/mac-$EXPECTED_ARCHITECTURE"
+          (cd "$package_dir" && shasum -a 256 --check *.zip.sha256)
+          archive=("$package_dir"/*.zip)
+          test "${#archive[@]}" -eq 1
+          extracted="$RUNNER_TEMP/gamforge-macos-$EXPECTED_ARCHITECTURE"
+          ditto -x -k "${archive[0]}" "$extracted"
+          "$extracted/GAMForge/GAMForge-CLI" --self-test
+          codesign --verify --deep --strict "$extracted/GAMForge/GAMForge.app"
+          "$extracted/GAMForge/GAMForge.app/Contents/MacOS/GAMForge" --gui-smoke-test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: macos-test-results-${{ matrix.architecture }}
+          path: build/macos-test-results.xml
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-${{ matrix.architecture }}
+          path: |
+            dist/mac-${{ matrix.architecture }}/gamforge-*-macos-${{ matrix.architecture }}.zip
+            dist/mac-${{ matrix.architecture }}/gamforge-*-macos-${{ matrix.architecture }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows
+    needs: [windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -98,6 +224,14 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-x64
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos-arm64
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos-x86_64
           path: dist
       - name: Publish verified build without overwriting an existing release
         env:

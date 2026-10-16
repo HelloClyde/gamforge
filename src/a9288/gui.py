@@ -1,4 +1,4 @@
-"""Local Windows desktop frontend for the actual C6502 -> S1C33 compiler."""
+"""Desktop frontend for the actual C6502 -> S1C33 compiler."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,12 +23,14 @@ from PIL import Image, ImageTk
 from a9288.app_options import default_app_name, encode_app_name, icon_images, inspect_game
 from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
+from a9288.compiler.kf2 import tool_candidates
 from a9288.paths import (
     DEPENDENCIES,
     USER_DATA,
     WORK,
     child_environment,
     dependency_setting,
+    open_path,
     task_command,
 )
 from a9288.targets import (
@@ -81,16 +84,18 @@ class Conversion:
                 f"找不到 {profile.name} SDK 的 {profile.sdk_directory}，请在「编译环境」中配置。"
             )
         for name in ("clang", "llvm-objcopy", "ld.lld", "llvm-readelf"):
-            if not any(
-                (self.toolchain / p).is_file()
-                for p in (name + ".exe", "bin/" + name + ".exe", name, "bin/" + name)
-            ):
-                raise ValueError(f"工具链缺少 {name}，请检查编译环境路径。")
+            if not any(p.is_file() for p in tool_candidates(self.toolchain, name)):
+                raise ValueError(
+                    f"工具链缺少本机可运行的 {name}，请检查编译环境路径。"
+                    "Mac 需要对应处理器的原生 S1C33 工具链，不能使用 Windows .exe。"
+                )
         for path in (self.rom8, self.rome):
             if not path.is_file() or path.stat().st_size != 2 * 1024 * 1024:
                 raise ValueError(f"请在「编译环境」中配置用户自备的 2 MiB 固件：{path.name}")
         if not bundled_helper().is_file() and not shutil.which("gcc"):
-            raise ValueError("源码版需要 PC gcc；分发版自带启动状态生成工具。")
+            raise ValueError(
+                "源码版需要宿主 C 编译器 gcc（Mac 可用 Xcode 命令行工具）；分发版已自带。"
+            )
         icon_images(self.icon, target=self.target)
 
     def command(self, work: Path) -> list[str]:
@@ -148,7 +153,12 @@ class ConversionWorker:
                     timeout=20,
                 )
             else:
-                process.terminate()
+                # Each conversion owns its POSIX session. Stop the backend,
+                # clang and linker too, not just the CLI that launched them.
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
 
     def run(self, config: Conversion):
         work = None
@@ -174,6 +184,7 @@ class ConversionWorker:
                     errors="replace",
                     bufsize=1,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    start_new_session=os.name != "nt",
                 )
                 with self.lock:
                     self.process = process
@@ -564,7 +575,7 @@ class ConverterApp:
         self.log.configure(yscrollcommand=scroll.set)
         self.label(
             shell,
-            "输出 EXE 运行于所选 BBK 机型，不是 Windows 程序。编译成功不代表完整兼容。",
+            "输出 EXE 运行于所选 BBK 机型，不是电脑程序。编译成功不代表完整兼容。",
             9,
             color=MUTED,
         ).pack(anchor="w", pady=(9, 0))
@@ -892,11 +903,17 @@ class ConverterApp:
 
     def open_output(self):
         if self.last_output:
-            os.startfile(str(self.last_output.parent))
+            try:
+                open_path(self.last_output.parent)
+            except OSError as exc:
+                messagebox.showerror("无法打开输出目录", str(exc), parent=self.root)
 
     def open_log(self):
         if self.log_path and self.log_path.exists():
-            os.startfile(str(self.log_path))
+            try:
+                open_path(self.log_path)
+            except OSError as exc:
+                messagebox.showerror("无法打开日志", str(exc), parent=self.root)
 
     def close(self):
         if self.running:

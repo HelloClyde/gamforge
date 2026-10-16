@@ -8,8 +8,10 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -21,7 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ("clang", "ld.lld", "llvm-objcopy", "llvm-readelf")
 
 
-def isolated_environment(work):
+def isolated_environment(work, target_platform="windows"):
+    if target_platform == "macos":
+        from build_macos import isolated_mac_environment
+
+        return isolated_mac_environment(work)
     compiler_overrides = {
         "CC",
         "CXX",
@@ -47,6 +53,12 @@ def isolated_environment(work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--portable-dir", type=Path, default=ROOT / "dist/GAMForge")
+    parser.add_argument(
+        "--platform",
+        choices=("windows", "macos"),
+        default="macos" if sys.platform == "darwin" else "windows",
+    )
+    parser.add_argument("--architecture", choices=("arm64", "x86_64"))
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument(
         "--sdk9288t", type=Path, help="Optional authorized 9288T SDK root (include/)"
@@ -62,20 +74,47 @@ def main():
     parser.add_argument(
         "--vc-runtime",
         type=Path,
-        required=True,
-        help="x64 redistributable CRT DLL directory, not System32",
+        help="Required on Windows only: x64 redistributable CRT DLL directory, not System32",
     )
     parser.add_argument("--authorized-redistribution", action="store_true")
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "dist" / f"gamforge-{__version__}-full-windows-x64.zip",
     )
     args = parser.parse_args()
     if not args.authorized_redistribution:
         parser.error("Explicit SDK/firmware redistribution authorization is required")
-    if os.name != "nt":
-        parser.error("Build the Windows full bundle on Windows")
+    macos = args.platform == "macos"
+    architecture = args.architecture or (platform.machine() if macos else "x86_64")
+    if macos:
+        from build_macos import (
+            archive_tree,
+            audit_payload,
+            frozen_self_test,
+            mac_layout,
+            require_native_host,
+            sign_app,
+            verify_minimum_os,
+            verify_native,
+            verify_system_libraries,
+            write_manifest,
+        )
+
+        try:
+            require_native_host(architecture)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.vc_runtime:
+            parser.error("macOS packages must use native tools, not Windows VC runtime")
+    elif os.name != "nt" or architecture != "x86_64":
+        parser.error("Build the Windows x64 full bundle on Windows")
+    elif not args.vc_runtime:
+        parser.error("--vc-runtime is required for the Windows full bundle")
+    args.output = args.output or ROOT / "dist" / (
+        f"gamforge-{__version__}-full-macos-{architecture}.zip"
+        if macos
+        else f"gamforge-{__version__}-full-windows-x64.zip"
+    )
     for p in (args.rom8, args.rome):
         if p.stat().st_size != 2 * 1024 * 1024:
             parser.error("Expected 2 MiB A-series firmware images")
@@ -90,10 +129,21 @@ def main():
     with tempfile.TemporaryDirectory(prefix="full-bundle-", dir=args.output.parent) as temporary:
         work = Path(temporary)
         folder = work / "GAMForge"
-        shutil.copytree(args.portable_dir, folder)
-        deps = folder / "dependencies"
+        shutil.copytree(args.portable_dir, folder, symlinks=macos)
+        if macos:
+            # Validate confinement before writing through any bundle directory.
+            # In particular Resources must not be an external/dangling symlink.
+            audit_payload(folder)
+        deps = mac_layout(folder)[2] if macos else folder / "dependencies"
         if deps.exists():
             parser.error("Input must be a clean light package without dependencies")
+        if macos:
+            metadata_file = folder / "MACOS-BUNDLE.json"
+            light_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+            if light_metadata.get("architecture") != architecture:
+                parser.error("Light package and requested native toolchain architectures differ")
+            if light_metadata.get("version") != __version__:
+                parser.error("Light package version does not match this source checkout")
         # Copy only headers actually needed by this compiler, not SDK games,
         # historical EXEs or unrelated tools from the developer's directory.
         for header in headers.rglob("*.h"):
@@ -121,14 +171,25 @@ def main():
         shutil.copyfile(args.rome, deps / "roms/E.BIN")
         tools = deps / "toolchain/bin"
         tools.mkdir(parents=True)
+        suffix = "" if macos else ".exe"
         for name in TOOLS:
-            shutil.copyfile(args.toolchain / "bin" / (name + ".exe"), tools / (name + ".exe"))
-        required = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-        for name in required:
-            if not (args.vc_runtime / name).is_file():
-                parser.error(f"Redistributable CRT missing {name}")
-        for dll in args.vc_runtime.glob("*.dll"):
-            shutil.copyfile(dll, tools / dll.name)
+            source = args.toolchain / "bin" / (name + suffix)
+            destination = tools / (name + suffix)
+            if macos:
+                verify_native(source, architecture)
+                verify_system_libraries(source)
+                shutil.copy2(source, destination)
+                destination.chmod(0o755)
+                subprocess.run(["codesign", "--force", "--sign", "-", str(destination)], check=True)
+            else:
+                shutil.copyfile(source, destination)
+        if not macos:
+            required = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+            for name in required:
+                if not (args.vc_runtime / name).is_file():
+                    parser.error(f"Redistributable CRT missing {name}")
+            for dll in args.vc_runtime.glob("*.dll"):
+                shutil.copyfile(dll, tools / dll.name)
         clang_lib = args.toolchain / "lib/clang"
         if clang_lib.is_dir():
             for include in clang_lib.glob("*/include"):
@@ -137,16 +198,22 @@ def main():
                 )
         for name in ("LLVM-LICENSE.TXT", "9288-gnu33-abi.patch", "manifest.json"):
             shutil.copyfile(ROOT / "toolchain" / name, deps / "toolchain" / name)
-        verify_9288_abi(str(tools / "clang.exe"))
-        env = isolated_environment(work)
-        report = json.loads(
-            subprocess.check_output(
-                [str(folder / "GAMForge-CLI.exe"), "--self-test"],
-                env=env,
-                cwd=work,
-                encoding="utf-8",
+        compiler = tools / ("clang" + suffix)
+        verify_9288_abi(str(compiler))
+        env = isolated_environment(work, args.platform)
+        if macos:
+            verify_minimum_os(folder, light_metadata["minimum_os"].removeprefix("macOS "))
+            sign_app(mac_layout(folder)[0])
+            report = frozen_self_test(folder, work)
+        else:
+            report = json.loads(
+                subprocess.check_output(
+                    [str(folder / "GAMForge-CLI.exe"), "--self-test"],
+                    env=env,
+                    cwd=work,
+                    encoding="utf-8",
+                )
             )
-        )
         assert report["self_test"] == "PASS" and report["version"] == __version__, report
         for path in report["dependencies"].values():
             p = Path(path).resolve()
@@ -167,9 +234,9 @@ def main():
             "sdk9288s_included": bool(args.sdk9288s),
             "tsw600_shared_sdk_included": bool(args.sdk9288s),
             "toolchain_version": subprocess.check_output(
-                [str(tools / "clang.exe"), "--version"], env=env, text=True
+                [str(compiler), "--version"], env=env, text=True
             ).splitlines()[0],
-            "minimum_os": "Windows 10 x64",
+            "minimum_os": light_metadata["minimum_os"] if macos else "Windows 10 x64",
             "games_included": False,
             "dependencies": {
                 p.relative_to(deps).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -177,13 +244,28 @@ def main():
                 if p.is_relative_to(deps)
             },
         }
+        if macos:
+            metadata.update(
+                platform="macos", architecture=architecture, signing="ad-hoc", notarized=False
+            )
         (folder / "FULL-BUNDLE.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        (folder / "开始使用.txt").write_text(
-            "全套离线版：完整解压后运行 GAMForge.exe，选择自己的 GAM 即可转换。\n无需安装 Python、SDK、编译器或手工填写依赖路径。\n请保留 dependencies 和 _internal 目录，不能只复制单个 EXE。\nEXE 放 A:\\系统\\程序；外置模式 RES 放 A:\\系统\\数据。\n需要 Windows 10/11 x64；不含游戏，不保证任意 GAM 兼容。\n",
-            encoding="utf-8",
+        instructions = (
+            (
+                "全套离线版：打开 GAMForge.app，选择自己的 GAM 即可转换。\n"
+                "无需安装 Python、SDK 或编译器；也可运行 ./GAMForge-CLI。\n"
+                "依赖内置于应用，请不要删除或修改应用内部内容；不含游戏。\n"
+                "仅 ad-hoc 签名，未经过 Apple 公证；请先核对来源和 SHA-256。\n"
+                "系统阻止打开时按隐私与安全性提示允许此应用，勿全局关闭安全保护。\n"
+                "EXE 放 A:\\系统\\程序；外置模式 RES 放 A:\\系统\\数据。\n"
+            )
+            if macos
+            else (
+                "全套离线版：完整解压后运行 GAMForge.exe，选择自己的 GAM 即可转换。\n无需安装 Python、SDK、编译器或手工填写依赖路径。\n请保留 dependencies 和 _internal 目录，不能只复制单个 EXE。\nEXE 放 A:\\系统\\程序；外置模式 RES 放 A:\\系统\\数据。\n需要 Windows 10/11 x64；不含游戏，不保证任意 GAM 兼容。\n"
+            )
         )
+        (folder / "开始使用.txt").write_text(instructions, encoding="utf-8")
         manifest = {
             p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(folder.rglob("*"))
@@ -193,10 +275,17 @@ def main():
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
         staged = work / "full.zip"
-        with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-            for p in sorted(folder.rglob("*")):
-                if p.is_file():
-                    z.write(p, Path(folder.name) / p.relative_to(folder))
+        if macos:
+            light_metadata["edition"] = "full"
+            metadata_file.write_text(json.dumps(light_metadata, indent=2) + "\n", encoding="utf-8")
+            audit_payload(folder, full=True)
+            write_manifest(folder)
+            archive_tree(folder, staged)
+        else:
+            with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+                for p in sorted(folder.rglob("*")):
+                    if p.is_file():
+                        z.write(p, Path(folder.name) / p.relative_to(folder))
         os.replace(staged, args.output)
     digest = hashlib.sha256(args.output.read_bytes()).hexdigest()
     args.output.with_suffix(".zip.sha256").write_text(

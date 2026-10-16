@@ -11,6 +11,29 @@ from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
 from a9288.targets import TARGETS, TOUCH_TARGETS, display_geometry
 
 
+def gui_smoke_test():
+    """CI-only visible Tk/Pillow startup check; no game, conversion or settings write."""
+    import tkinter as tk
+
+    from a9288.gui import ConverterApp
+
+    root = tk.Tk()
+    errors = []
+    root.report_callback_exception = lambda _kind, error, _trace: errors.append(error)
+    try:
+        app = ConverterApp(root)
+        root.update_idletasks()
+        root.after(150, root.quit)
+        root.mainloop()
+        if errors:
+            raise RuntimeError("GUI callback failed during packaged smoke test") from errors[0]
+        if not root.winfo_viewable() or app.target.get() not in TARGETS:
+            raise RuntimeError("Converter window was not created correctly")
+        print(json.dumps({"gui_self_test": "PASS", "tk": root.tk.call("info", "patchlevel")}))
+    finally:
+        root.destroy()
+
+
 def main():
     game = bytearray(0x100)
     game[:4] = b"GAM\0"
