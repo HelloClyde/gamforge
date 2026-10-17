@@ -70,6 +70,7 @@ def input_source():
         "POWER_OFF_ON": 88,
         "F12": 88,
         "SPACE": 57,
+        "START": 59,
         "PAGEUP": 104,
         "PAGEDOWN": 109,
         "CURSORUP": 72,
@@ -109,7 +110,7 @@ enum {MSG_FIRSTKEYMSG=0x10,MSG_LASTKEYMSG=0x1f,MSG_KEYDOWN=0x10,MSG_CHAR=0x11,
  MSG_KEYUP=0x12,MSG_SYSKEYDOWN=0x13,MSG_SYSCHAR=0x14,MSG_SYSKEYUP=0x15,
  MSG_DT_KEYOFF=0xda,MSG_DT_KEYDOWN=0xea,MSG_DT_CHAR=0xeb,MSG_DT_KEYUP=0xec,
  MSG_DT_SYSKEYDOWN=0xed,MSG_DT_SYSCHAR=0xee,MSG_DT_SYSKEYUP=0xef,
- MSG_TIMER=0x144,MSG_CLOSE=0x67,MSG_PAINT=0x66,MSG_HELP=0x7fd};
+ MSG_TIMER=0x144,MSG_CLOSE=0x67,MSG_PAINT=0x66,MSG_HELP=0x7fd,MSG_HOTKEY=0x7fe};
 static struct {unsigned window;} c6502_native_state={77};
 static struct {unsigned key_scans,key_scan_max_gap_ticks,key_edges,key_repeats,
  keys_consumed,key_queue_peak,key_queue_overflows;} c6502_perf;
@@ -173,6 +174,83 @@ int main(void){reset();
  tap(63,1);tap(64,7);tap(1,0x2e);tap(28,0x2f);tap(96,0x2f);
  unsigned char type;assert(translate_key(map_key(87),&type)==0x26 && type==5);
  assert(map_key(88)==255 && native_take_key()==255);return 0;}
+""",
+    )
+
+
+def test_physical_top_keys_map_to_4980_functions(tmp_path):
+    run_c(
+        tmp_path,
+        input_source()
+        + r"""
+int main(void){reset();
+ /* Actual T IAL rows 0..3, column 7, not the SDK's legacy F1..F4 aliases. */
+ const unsigned scan[]={59,116,117,118}, raw[]={0x2b,0x29,0x2a,0x2c};
+ const unsigned function[]={0x33,0x30,0x32,0x31};
+ for(unsigned i=0;i<4;++i){unsigned char type;
+  tap(scan[i],raw[i]);
+  assert(translate_key(raw[i],&type)==function[i] && type==5);
+  assert(c6502_native_t_key_message(MSG_HOTKEY,scan[i],0));
+  assert(c6502_native_t_key_message(MSG_HOTKEY,scan[i],0));
+  assert(c6502_native_t_key_message(MSG_SYSKEYDOWN,scan[i],0));
+  assert(c6502_native_t_key_message(MSG_DT_KEYDOWN,scan[i],0));
+  assert(c6502_native_t_key_message(MSG_DT_SYSKEYDOWN,scan[i],0));
+  assert(c6502_native_t_key_message(MSG_SYSCHAR,scan[i],0));
+  assert(native_take_key()==raw[i] && native_take_key()==255);
+  now+=256;native_t_pump(now);assert(native_take_key()==255); /* no auto-repeat */
+  assert(c6502_native_t_key_message(MSG_DT_SYSKEYUP,scan[i],0));
+  tap(scan[i],raw[i]); /* real release permits another short tap */
+  assert(c6502_native_t_key_message(MSG_HOTKEY,scan[i],0));
+  assert(native_take_key()==raw[i]);
+  c6502_native_t_key_message(MSG_DT_KEYOFF,0,0);
+  assert(c6502_native_t_key_message(MSG_HOTKEY,scan[i],0));
+  c6502_native_t_key_message(MSG_KEYUP,scan[i],0);
+  assert(native_take_key()==raw[i] && native_take_key()==255);
+ }
+ assert(c6502_perf.key_edges==20 && !c6502_perf.key_repeats);
+ /* Existing Insert/Modify/Search/Delete aliases and system power stay intact. */
+ tap(110,0x29);tap(65,0x2a);tap(67,0x2b);tap(111,0x2c);tap(14,0x2c);
+ assert(map_key(60)==255 && map_key(61)==255 && map_key(62)==255);
+ assert(map_key(88)==255);
+ assert(!c6502_native_t_key_message(MSG_HOTKEY,88,0));
+ assert(!c6502_native_t_key_message(MSG_HOTKEY,60,0));
+ assert(native_take_key()==255);return 0;}
+""",
+    )
+
+
+def test_top_keys_do_not_leak_from_launch_or_teardown(tmp_path):
+    run_c(
+        tmp_path,
+        input_source()
+        + r"""
+int main(void){reset();const unsigned scan[]={59,116,117,118};
+ for(unsigned i=0;i<4;++i){
+  c6502_t_gui_accept=0;
+  c6502_native_t_key_message(MSG_HOTKEY,scan[i],0);
+  c6502_t_gui_accept=1;
+  c6502_native_t_key_message(MSG_HOTKEY,scan[i],0);
+  c6502_native_t_key_message(MSG_KEYUP,scan[i],0);
+  assert(native_take_key()==255);
+ }
+ c6502_native_host_stop_requested=1;
+ for(unsigned i=0;i<4;++i){
+  c6502_native_t_key_message(MSG_KEYDOWN,scan[i],0);
+  c6502_native_t_key_message(MSG_KEYUP,scan[i],0);
+ }
+ assert(native_take_key()==255 && !c6502_perf.key_edges);return 0;}
+""",
+    )
+
+
+def test_t_top_key_defaults_do_not_change_other_targets(tmp_path):
+    run_c(
+        tmp_path,
+        input_source().replace("#define C6502_TARGET_9288T 1", "/* non-T mapping */")
+        + r"""
+int main(void){assert(map_key(59)==255 && map_key(116)==255);
+ assert(map_key(117)==255 && map_key(118)==255);
+ assert(map_key(88)==0x2e);return 0;}
 """,
     )
 

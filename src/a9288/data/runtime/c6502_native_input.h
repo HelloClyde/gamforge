@@ -1,5 +1,6 @@
 /* One input source, two operations: capture now; consume later.  Drawing
    checkpoints must never consume a key intended for SysGetKey/GuiGetMsg. */
+#include "c6502_native_keymap.h"
 #define C6502_KEY_QUEUE_SIZE 16u
 static c6502_u8 c6502_key_queue[C6502_KEY_QUEUE_SIZE];
 static c6502_u8 c6502_key_head, c6502_key_count;
@@ -9,6 +10,9 @@ static c6502_u8 c6502_key_previous[8];
 static c6502_u8 c6502_key_initialized, c6502_input_active;
 static c6502_u32 c6502_key_scan_tick, c6502_key_repeat_tick;
 static c6502_u8 c6502_key_repeat = 0xffu;
+/* Two physical keys may intentionally have the same guest mapping. A
+   different physical held key must restart the directional repeat delay. */
+static c6502_u8 c6502_key_repeat_source = 0xffu;
 static c6502_u8 c6502_key_repeating;
 /* Action keys have no auto-repeat. Re-arm only after a stable release,
    while accepting the initial down edge immediately (no short-tap delay). */
@@ -134,7 +138,35 @@ static void native_key_snapshot(const c6502_u8 current[8], c6502_u32 now)
         {0x0du, 0x16u, 0x1eu, 0x27u, 0xffu, 0x36u, 0xffu},
         {0x0eu, 0x17u, 0x1fu, 0x35u, 0x38u, 0x37u, 0x39u}
     };
-    c6502_u8 held = 0xffu;
+    c6502_u8 held = 0xffu, held_source = 0xffu;
+    const c6502_u8 (*effective_map)[7] = key_map;
+#if C6502_KEYMAP_COUNT > 0 && !defined(C6502_TARGET_9288T) && !defined(C6502_TARGET_9288S)
+    static c6502_u8 custom_map[8][7], custom_ready;
+    c6502_u8 actions = 0u;
+    c6502_u32 map_row, map_column;
+    /* Resolve the tiny map once, not once per scanned key. The scanner
+       retains physical rows for release, launch and debounce tracking. */
+    if (!custom_ready) {
+        for (map_row = 0u; map_row < 8u; ++map_row)
+            for (map_column = 0u; map_column < 7u; ++map_column)
+                custom_map[map_row][map_column] = (c6502_u8)native_keymap_lookup(
+                    map_row * 8u + map_column, key_map[map_row][map_column]);
+        custom_ready = 1u;
+    }
+    effective_map = custom_map;
+    /* A remapped confirm/exit shares the original stable-release action
+       gate, including aliases and the held launcher-key suppression. */
+    for (map_row = 0u; map_row < 8u; ++map_row)
+        for (map_column = 0u; map_column < 7u; ++map_column) {
+            c6502_u8 mapped = effective_map[map_row][map_column];
+#ifdef C6502_CRASH_TRACE
+            if (map_row == 2u && map_column == 2u) continue; /* Reserved physical D. */
+#endif
+            if (!(current[map_row] & (1u << map_column))) continue;
+            if (mapped == 0x2eu) actions |= 1u;
+            if (mapped == 0x2fu) actions |= 2u;
+        }
+#endif
     c6502_u32 row, gap = now - c6502_key_scan_tick;
     if (c6502_key_initialized && gap > c6502_perf.key_scan_max_gap_ticks)
         c6502_perf.key_scan_max_gap_ticks = gap;
@@ -146,20 +178,27 @@ static void native_key_snapshot(const c6502_u8 current[8], c6502_u32 now)
     nd_key_snapshot(current); /* Request only, never filesystem I/O here. */
 #endif
     /* Both physical Exit aliases belong to one logical action key. */
+#if C6502_KEYMAP_COUNT > 0 && !defined(C6502_TARGET_9288T) && !defined(C6502_TARGET_9288S)
+    native_action_snapshot(actions, now);
+#else
     native_action_snapshot((c6502_u8)(
         (((current[0] | current[5]) & 64u) ? 1u : 0u) |
         ((current[1] & 64u) ? 2u : 0u)), now);
+#endif
     for (row = 0u; row < 8u; ++row) {
         c6502_u32 column;
         c6502_u8 pressed = current[row] & ~c6502_key_previous[row];
         for (column = 0u; column < 7u; ++column) {
-            c6502_u8 code = key_map[row][column];
+            c6502_u8 code = effective_map[row][column];
 #ifdef C6502_CRASH_TRACE
             if (row == 2u && column == 2u) continue; /* Reserved physical D. */
 #endif
             if (code == 0xffu) continue;
             if ((current[row] & (1u << column)) &&
-                (code == 0x35u || (code >= 0x37u && code <= 0x39u))) held = code;
+                (code == 0x35u || (code >= 0x37u && code <= 0x39u))) {
+                held = code;
+                held_source = (c6502_u8)(row * 8u + column);
+            }
             if (code != 0x2eu && code != 0x2fu &&
                 c6502_key_initialized && (pressed & (1u << column)))
                 native_queue_key(code, 0);
@@ -168,10 +207,12 @@ static void native_key_snapshot(const c6502_u8 current[8], c6502_u32 now)
     }
     /* This baseline is taken at game entry, not at the first key query.
        It suppresses only the key still held from launching the app. */
-    if (!c6502_key_initialized || held != c6502_key_repeat || gap > 64u) {
+    if (!c6502_key_initialized || held != c6502_key_repeat ||
+        held_source != c6502_key_repeat_source || gap > 64u) {
         /* A long unsampled interval (or debugger/clock jump) is not proof
            the key was continuously held. Do not synthesize a repeat. */
         c6502_key_repeat = held;
+        c6502_key_repeat_source = held_source;
         c6502_key_repeat_tick = now;
         c6502_key_repeating = 0u;
     } else if (held != 0xffu &&

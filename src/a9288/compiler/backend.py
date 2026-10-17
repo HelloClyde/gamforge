@@ -30,7 +30,6 @@ from typing import Iterable
 
 from a9288.compiler import boot as boot_export
 from a9288.compiler import cfg as native
-from a9288.compiler import compression as c6502_lzss
 from a9288.compiler import frontend as frontend
 from a9288.compiler import functions as functions
 from a9288.compiler import semantics as semantic
@@ -456,27 +455,29 @@ def compile_resource_image(
     output: Path,
     game: bytes,
 ) -> dict[str, object]:
-    """Compress the exact GAM image and wrap it in a linkable ELF section."""
+    """Embed exact GAM bytes in the loader's writable image, with no heap copy.
 
-    packed = c6502_lzss.compress(game)
-    if c6502_lzss.decompress(packed, len(game)) != game:
-        raise RuntimeError("internal LZSS resource verification failed")
-    packed_path = output / "c6502_game_image.lzss"
+    Original code bytes remain readable as data. Games can write data in
+    those banks too, so this must be .data, not a const/read-only blob.
+    A new session starts from a freshly loaded executable image.
+    """
+
+    raw_path = output / "c6502_game_image.bin"
     source_path = output / "c6502_game_image.S"
     object_path = output / "c6502_game_image.o"
-    packed_path.write_bytes(packed)
-    include_path = packed_path.resolve().as_posix().replace('"', '\\"')
+    raw_path.write_bytes(game)
+    include_path = raw_path.resolve().as_posix().replace('"', '\\"')
     source_path.write_text(
         "\n".join(
             [
-                "/* Exact original GAM bytes, compressed as non-executable data. */",
-                '    .section ".rodata.c6502_game_image","a",@progbits',
+                "/* Exact original GAM bytes: writable data, not executed. */",
+                '    .section ".data.c6502_game_image","aw",@progbits',
                 "    .p2align 2",
-                "    .globl c6502_game_image_lzss_start",
-                "c6502_game_image_lzss_start:",
+                "    .globl c6502_game_image_start",
+                "c6502_game_image_start:",
                 f'    .incbin "{include_path}"',
-                "    .globl c6502_game_image_lzss_end",
-                "c6502_game_image_lzss_end:",
+                "    .globl c6502_game_image_end",
+                "c6502_game_image_end:",
                 "",
             ]
         ),
@@ -488,7 +489,8 @@ def compile_resource_image(
     )
     return {
         "raw_bytes": len(game),
-        "packed_bytes": len(packed),
+        "stored_bytes": len(game),
+        "compression": "none",
         "object": str(object_path),
     }
 
@@ -500,7 +502,7 @@ def compile_boot_snapshot(
     rom8: Path,
     rome: Path,
 ) -> dict[str, object]:
-    """Export the firmware-prepared entry state and embed it compactly.
+    """Export and embed the uncompressed firmware-prepared entry state.
 
     The reference firmware runs only on the PC at build time.  The KF2 starts
     from this RAM/register/bank snapshot and never contains or executes either
@@ -508,27 +510,24 @@ def compile_boot_snapshot(
     """
 
     raw_path = output / "c6502_boot_snapshot.bin"
-    packed_path = output / "c6502_boot_snapshot.lzss"
     source_path = output / "c6502_boot_snapshot.S"
     object_path = output / "c6502_boot_snapshot.o"
     boot_export.export_snapshot(game_path, raw_path, rom8, rome)
     raw = raw_path.read_bytes()
-    packed = c6502_lzss.compress(raw)
-    if c6502_lzss.decompress(packed, len(raw)) != raw:
-        raise RuntimeError("internal boot snapshot compression verification failed")
-    packed_path.write_bytes(packed)
-    include_path = packed_path.resolve().as_posix().replace('"', '\\"')
+    if len(raw) != 32832 or raw[:3] != b"C65":
+        raise RuntimeError("invalid firmware boot snapshot")
+    include_path = raw_path.resolve().as_posix().replace('"', '\\"')
     source_path.write_text(
         "\n".join(
             [
                 "/* PC-exported 6502 firmware boot state; data only. */",
                 '    .section ".rodata.c6502_boot_snapshot","a",@progbits',
                 "    .p2align 2",
-                "    .globl c6502_boot_snapshot_lzss_start",
-                "c6502_boot_snapshot_lzss_start:",
+                "    .globl c6502_boot_snapshot_start",
+                "c6502_boot_snapshot_start:",
                 f'    .incbin "{include_path}"',
-                "    .globl c6502_boot_snapshot_lzss_end",
-                "c6502_boot_snapshot_lzss_end:",
+                "    .globl c6502_boot_snapshot_end",
+                "c6502_boot_snapshot_end:",
                 "",
             ]
         ),
@@ -540,7 +539,8 @@ def compile_boot_snapshot(
     )
     return {
         "raw_bytes": len(raw),
-        "packed_bytes": len(packed),
+        "stored_bytes": len(raw),
+        "compression": "none",
         "object": str(object_path),
     }
 
@@ -1496,14 +1496,19 @@ def main() -> None:
     ):
         for path in args.output.glob(pattern):
             path.unlink()
-    for pattern in ("c6502_game_image.S", "c6502_game_image.o", "c6502_game_image.lzss"):
+    for pattern in (
+        "c6502_game_image.S",
+        "c6502_game_image.o",
+        "c6502_game_image.bin",
+        "c6502_game_image.lzss",  # Remove stale output from pre-raw builds.
+    ):
         for path in args.output.glob(pattern):
             path.unlink()
     for pattern in ("c6502_boot_snapshot.*", "c6502_dispatch_table.*"):
         for path in args.output.glob(pattern):
             path.unlink()
     outlines = collect_semantic_outlines(game, bodies)
-    print("[GAM9288_STAGE] translate|翻译原生代码、压缩资源与准备启动状态", flush=True)
+    print("[GAM9288_STAGE] translate|翻译原生代码、打包未压缩资源与准备启动状态", flush=True)
     outline_module = compile_semantic_outlines(
         args.clang,
         args.objcopy,
@@ -1511,7 +1516,7 @@ def main() -> None:
         outlines,
     )
     resource_image = (
-        {"packed_bytes": 0, "object": None}
+        {"stored_bytes": 0, "object": None}
         if args.external_resources
         else compile_resource_image(args.clang, args.output, game)
     )
@@ -1605,11 +1610,20 @@ def main() -> None:
         ),
         "semantic_outline_bytes": outline_module["native_bytes"],
         "semantic_outline_object": outline_module["object"],
-        "compressed_game_image_bytes": resource_image["packed_bytes"],
+        "resource_compression": "none",
+        "embedded_game_image_bytes": resource_image["stored_bytes"],
+        "embedded_game_image_object": resource_image["object"],
+        "embedded_game_image_zero_copy": not args.external_resources,
+        "resource_full_image_heap_bytes": 0,
+        "boot_snapshot_bytes": boot_snapshot["stored_bytes"],
+        "boot_snapshot_object": boot_snapshot["object"],
+        "boot_snapshot_compression": "none",
+        # Retain old keys for report readers, but never label raw data compressed.
+        "compressed_game_image_bytes": 0,
         "external_resources": args.external_resources,
-        "compressed_game_image_object": resource_image["object"],
-        "compressed_boot_snapshot_bytes": boot_snapshot["packed_bytes"],
-        "compressed_boot_snapshot_object": boot_snapshot["object"],
+        "compressed_game_image_object": None,
+        "compressed_boot_snapshot_bytes": 0,
+        "compressed_boot_snapshot_object": None,
         "native_dispatch_entries": dispatch_table["entries"],
         "native_dispatch_scope": indirect_scope,
         "native_dispatch_table_bytes": dispatch_table["bytes"],
@@ -1626,10 +1640,10 @@ def main() -> None:
     report["native_plus_preserved_data_bytes"] = int(report["native_code_bytes"]) + int(
         report["preserved_game_data_bytes"]
     )
-    report["native_plus_compressed_game_bytes"] = (
+    report["native_plus_stored_game_bytes"] = (
         int(report["native_code_bytes"])
-        + int(report["compressed_game_image_bytes"])
-        + int(report["compressed_boot_snapshot_bytes"])
+        + int(report["embedded_game_image_bytes"])
+        + int(report["boot_snapshot_bytes"])
         + int(report["native_dispatch_table_bytes"])
     )
     report_path = args.output / "report.json"

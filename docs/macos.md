@@ -6,7 +6,8 @@
 ## 当前状态
 
 已加入 Apple Silicon `arm64` 与 Intel `x86_64` 的源码适配、`.app` / CLI 打包入口和
-双架构 CI。**当前 v1.4.0 Release 仍仅有 Windows 资产；Mac 测试包尚未发布为 Release。**
+双架构 CI。v1.5.0 起 Tag 流程会在 Windows 和两种 Mac 构建全部成功后发布轻量包；
+实际可下载版本以 Releases 为准，只有含 `full` 的资产才是依赖齐全的全套版。
 2026-10-16 的 [应用 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)
 在两个 Mac runner 上各执行 508 项测试（464 通过、44 项可选环境跳过），完成本机 helper、
 冻结 worker、ZIP 解压后签名、自检和实际 GUI 窗口检查。对应源提交为 `6610c689`。

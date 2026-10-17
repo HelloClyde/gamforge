@@ -1,4 +1,7 @@
 ENTRY(DL_AppMain)
+/* Safe legacy default for direct users of this script. The native builder
+   supplies a target-specific payload ceiling, excluding KF2 header/icons. */
+PROVIDE(__app_payload_limit = 0x02800000);
 
 SECTIONS
 {
@@ -54,6 +57,6 @@ SECTIONS
         BYTE(0xff)
     }
     __payload_end = .;
-    ASSERT(__payload_end <= 0x02800000,
-           "native GAM payload exceeds the 9288 application RAM window")
+    ASSERT(__payload_end <= __app_payload_limit,
+           "native GAM payload including BSS/noinit exceeds the target application window")
 }

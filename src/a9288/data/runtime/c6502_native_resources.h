@@ -1,35 +1,21 @@
 #ifndef C6502_NATIVE_RESOURCES_H
 #define C6502_NATIVE_RESOURCES_H
 /* Immutable disk pages + bounded session-only copy-on-write pages.
-   No code execution, whole-image allocation or writes to the RES file. */
+   No code execution, whole-image allocation or writes to the RES file.
+   RES v1 keeps its checksum table on disk for format compatibility, but
+   target-side reads do not compute CRCs or load that table. Header identity,
+   exact file length, bounds and complete reads remain mandatory. */
 #define NR_PAGE 4096u
 #define NR_SLOTS 32u
 #define NR_DIRTY_LIMIT 64u
 static FS_FILE *nr_file;
-static c6502_u8 *nr_cache, *nr_crcs;
+static c6502_u8 *nr_cache;
 static c6502_u8 **nr_dirty;
 static c6502_u32 nr_tags[NR_SLOTS], nr_pages, nr_offset;
 static c6502_u32 nr_hits, nr_misses, nr_writes, nr_dirty_count, nr_error;
 c6502_u32 c6502_resource_entry_sp;
 extern void c6502_native_resource_abort(void) __attribute__((noreturn));
 
-static c6502_u32 nr_u32(const c6502_u8 *p)
-{
-    return p[0] | ((c6502_u32)p[1]<<8) | ((c6502_u32)p[2]<<16) | ((c6502_u32)p[3]<<24);
-}
-static c6502_u32 nr_crc(const c6502_u8 *p, c6502_u32 n)
-{
-    static const c6502_u32 table[16] = {
-        0,0x1db71064u,0x3b6e20c8u,0x26d930acu,0x76dc4190u,0x6b6b51f4u,0x4db26158u,0x5005713cu,
-        0xedb88320u,0xf00f9344u,0xd6d6a3e8u,0xcb61b38cu,0x9b64c2b0u,0x86d3d2d4u,0xa00ae278u,0xbdbdf21cu
-    };
-    c6502_u32 crc=0xffffffffu;
-    while (n--) {
-        crc ^= *p++;
-        crc = (crc>>4)^table[crc&15u]; crc = (crc>>4)^table[crc&15u];
-    }
-    return crc^0xffffffffu;
-}
 static void nr_fail(c6502_u32 error)
 {
     if (!nr_error) nr_error=error;
@@ -45,7 +31,6 @@ static void nr_close(void)
         free(nr_dirty); nr_dirty=0;
     }
     if (nr_cache) { free(nr_cache); nr_cache=0; }
-    if (nr_crcs) { free(nr_crcs); nr_crcs=0; }
 }
 static int nr_open(void)
 {
@@ -60,15 +45,11 @@ static int nr_open(void)
     if (fs_fread(header,1,64,nr_file)!=64u) { nr_fail(2); return 0; }
     for (i=0;i<64u;++i) if (header[i]!=expected[i]) { nr_fail(2); return 0; }
     if (fs_fseek(nr_file,0,SEEK_END)<0 ||
-        fs_ftell(nr_file)!=(long)(nr_offset+C6502_GAME_SIZE) ||
-        fs_fseek(nr_file,64,SEEK_SET)<0) { nr_fail(2); return 0; }
-    nr_crcs=(c6502_u8 *)malloc(nr_pages*4u);
+        fs_ftell(nr_file)!=(long)(nr_offset+C6502_GAME_SIZE)) { nr_fail(2); return 0; }
     nr_cache=(c6502_u8 *)malloc(NR_SLOTS*NR_PAGE);
     nr_dirty=(c6502_u8 **)malloc(nr_pages*sizeof(*nr_dirty));
     if (nr_dirty) bytes_set((c6502_u8 *)nr_dirty,0,nr_pages*sizeof(*nr_dirty));
-    if (!nr_crcs || !nr_cache || !nr_dirty) { nr_fail(3); return 0; }
-    if (fs_fread(nr_crcs,1,nr_pages*4u,nr_file)!=nr_pages*4u ||
-        nr_crc(nr_crcs,nr_pages*4u)!=nr_u32(header+60)) { nr_fail(2); return 0; }
+    if (!nr_cache || !nr_dirty) { nr_fail(3); return 0; }
     for (i=0;i<NR_SLOTS;++i) nr_tags[i]=0xffffffffu;
     return 1;
 }
@@ -85,7 +66,6 @@ static c6502_u8 *nr_page(c6502_u32 offset)
     if (size>NR_PAGE) size=NR_PAGE;
     if (fs_fseek(nr_file,(long)(nr_offset+page*NR_PAGE),SEEK_SET)<0 ||
         fs_fread(p,1,size,nr_file)!=size) { nr_fail(4); return 0; }
-    if (nr_crc(p,size)!=nr_u32(nr_crcs+page*4u)) { nr_fail(5); return 0; }
     bytes_set(p+size,0,NR_PAGE-size);
     nr_tags[slot]=page;
     return p;

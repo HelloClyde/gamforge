@@ -24,6 +24,15 @@ from a9288.app_options import default_app_name, encode_app_name, icon_images, in
 from a9288.cli import DEFAULT_SDK, DEFAULT_TOOLCHAIN
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME, bundled_helper
 from a9288.compiler.kf2 import tool_candidates
+from a9288.keymap import (
+    GUEST_KEYS,
+    HOST_KEYS,
+    KEYMAP_TARGETS,
+    custom_keymap,
+    default_keymap,
+    keymap_arguments,
+    normalize_keymap,
+)
 from a9288.paths import (
     DEPENDENCIES,
     USER_DATA,
@@ -49,6 +58,24 @@ MUTED = "#66758b"
 BLUE = "#2563eb"
 
 
+def saved_key_mappings(settings: dict) -> dict[str, dict[str, str]]:
+    """Keep model settings independent; discard stale entries, not valid peers."""
+    saved = settings.get("key_mappings", {})
+    if not isinstance(saved, dict):
+        saved = {}
+    result = {target: {} for target in KEYMAP_TARGETS}
+    for target in KEYMAP_TARGETS:
+        overrides = saved.get(target, {})
+        if not isinstance(overrides, dict):
+            continue
+        for source, destination in overrides.items():
+            try:
+                result[target].update(custom_keymap(target, {source: destination}))
+            except (TypeError, ValueError):
+                pass
+    return result
+
+
 def python_console() -> str:
     path = Path(sys.executable)
     return str(path.with_name("python.exe")) if path.name.lower() == "pythonw.exe" else str(path)
@@ -69,6 +96,7 @@ class Conversion:
     display_scale: str | None = None
     crash_trace: bool = False
     trace_on_start: bool = False
+    key_mapping: dict[str, str] | None = None
 
     def validate(self):
         inspect_game(self.game)
@@ -79,6 +107,7 @@ class Conversion:
             raise ValueError("不能覆盖原始 GAM。")
         profile = target_profile(self.target)
         display_scale(self.target, self.display_scale)
+        normalize_keymap(self.target, self.key_mapping)
         if not (self.sdk / profile.sdk_directory).is_dir():
             raise ValueError(
                 f"找不到 {profile.name} SDK 的 {profile.sdk_directory}，请在「编译环境」中配置。"
@@ -129,7 +158,84 @@ class Conversion:
             command.append("--crash-trace")
         if self.trace_on_start:
             command.append("--trace-on-start")
+        command += keymap_arguments(self.target, self.key_mapping)
         return command
+
+
+class KeyMappingDialog:
+    """Compile-time physical-key settings, not an in-game input capture tool."""
+
+    def __init__(self, parent, target: str, mapping: dict[str, str], apply):
+        self.target = target
+        self.apply_callback = apply
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"{target_profile(target).name} 按键映射 · GAMForge")
+        self.window.geometry("580x620")
+        self.window.minsize(480, 400)
+        self.window.transient(parent)
+        self.window.configure(bg="white")
+        header = tk.Frame(self.window, bg="white", padx=18, pady=14)
+        header.pack(fill="x")
+        ttk.Label(
+            header, text="实体按键 → A 系列游戏按键", font=("Microsoft YaHei UI", 12, "bold")
+        ).pack(anchor="w")
+        ttk.Label(
+            header,
+            text="保存为当前机型的转换默认值；重新转换 EXE 后生效。\n"
+            "方向、确定、退出、电源及实体 Shift 保持固定。多个实体键可映射到同一功能。",
+            wraplength=530,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+        body = tk.Frame(self.window, bg="white")
+        body.pack(fill="both", expand=True, padx=18)
+        canvas = tk.Canvas(body, bg="white", highlightthickness=0)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scroll.set)
+        rows = ttk.Frame(canvas)
+        page = canvas.create_window((0, 0), window=rows, anchor="nw")
+        rows.columnconfigure(1, weight=1)
+        rows.bind("<Configure>", lambda _: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(page, width=event.width))
+        self.destination_labels = {
+            key: f"{value.label} ({key})" for key, value in GUEST_KEYS.items()
+        }
+        self.destination_ids = {label: key for key, label in self.destination_labels.items()}
+        self.variables = {}
+        resolved = normalize_keymap(target, mapping)
+        for index, key in enumerate(HOST_KEYS[target]):
+            ttk.Label(rows, text=key.label).grid(
+                row=index, column=0, sticky="w", padx=(0, 18), pady=5
+            )
+            variable = tk.StringVar(self.window, self.destination_labels[resolved[key.id]])
+            self.variables[key.id] = variable
+            combo = ttk.Combobox(
+                rows,
+                textvariable=variable,
+                values=tuple(self.destination_labels.values()),
+                state="readonly",
+                width=30,
+            )
+            combo.grid(row=index, column=1, sticky="ew", pady=5)
+        footer = ttk.Frame(self.window, padding=18)
+        footer.pack(fill="x")
+        ttk.Button(footer, text="恢复当前机型默认", command=self.reset).pack(side="left")
+        ttk.Button(footer, text="应用", command=self.apply).pack(side="right")
+        ttk.Button(footer, text="取消", command=self.window.destroy).pack(side="right", padx=8)
+        self.window.bind("<Escape>", lambda _: self.window.destroy())
+        self.window.grab_set()
+
+    def reset(self):
+        for key, destination in default_keymap(self.target).items():
+            self.variables[key].set(self.destination_labels[destination])
+
+    def apply(self):
+        mapping = {
+            key: self.destination_ids[variable.get()] for key, variable in self.variables.items()
+        }
+        if self.apply_callback(custom_keymap(self.target, mapping)):
+            self.window.destroy()
 
 
 class ConversionWorker:
@@ -243,6 +349,9 @@ class ConverterApp:
             settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
+        if not isinstance(settings, dict):
+            settings = {}
+        self.key_mappings = saved_key_mappings(settings)
         self.sdk = tk.StringVar(value=dependency_setting(settings.get("sdk"), DEFAULT_SDK))
         self.target = tk.StringVar(value=settings.get("target", "9288").lower())
         if self.target.get() not in TARGETS:
@@ -412,7 +521,7 @@ class ConverterApp:
             justify="left",
         ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(7, 0))
         mode = ttk.Checkbutton(
-            left, text="EXE＋外置资源文件（大游戏，按需缓存）", variable=self.external_resources
+            left, text="EXE＋外置资源文件（未压缩，按需缓存）", variable=self.external_resources
         )
         mode.grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 0))
         self.inputs.append(mode)
@@ -443,18 +552,25 @@ class ConverterApp:
         self.target_hint = self.label(left, "", 9, color=MUTED)
         self.target_hint.grid(row=13, column=0, columnspan=2, sticky="w", pady=(5, 0))
         self._scale_changed()
+        self.keymap_row = tk.Frame(left, bg="white")
+        self.keymap_row.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(9, 0))
+        self.keymap_button = self.button(self.keymap_row, "按键映射…", self.configure_keys)
+        self.keymap_button.pack(side="left")
+        self.keymap_hint = self.label(self.keymap_row, "", 9, color=MUTED)
+        self.keymap_hint.pack(side="left", padx=(10, 0))
+        self._update_keymap_controls()
         debug = ttk.Checkbutton(
             left, text="包含崩溃追踪（游戏中按 D 开关）", variable=self.crash_trace
         )
-        debug.grid(row=14, column=0, columnspan=2, sticky="w", pady=(9, 0))
+        debug.grid(row=15, column=0, columnspan=2, sticky="w", pady=(9, 0))
         self.inputs.append(debug)
         debug_start = ttk.Checkbutton(
             left, text="从启动就开启追踪（会明显减速）", variable=self.trace_on_start
         )
-        debug_start.grid(row=15, column=0, columnspan=2, sticky="w")
+        debug_start.grid(row=16, column=0, columnspan=2, sticky="w")
         self.inputs.append(debug_start)
         self.label(left, "触屏机型：点右上角 D；重启后保留 GAMDBG0/1.LOG。", 9, color=MUTED).grid(
-            row=16, column=0, columnspan=2, sticky="w", pady=(3, 0)
+            row=17, column=0, columnspan=2, sticky="w", pady=(3, 0)
         )
         right = self.card(content)
         right.grid(row=0, column=1, sticky="nsew")
@@ -669,7 +785,40 @@ class ConverterApp:
         )
         self.display_scale.set(self.display_scales[self.current_target])
         self._scale_changed()
+        self._update_keymap_controls()
         self._preview()
+
+    def _update_keymap_controls(self):
+        target = self.target.get()
+        if target not in KEYMAP_TARGETS:
+            self.keymap_row.grid_remove()
+            return
+        self.keymap_row.grid()
+        count = len(self.key_mappings[target])
+        self.keymap_hint.configure(text=f"已自定义 {count} 键" if count else "当前机型默认映射")
+
+    def configure_keys(self):
+        target = self.target.get()
+        if self.running or target not in KEYMAP_TARGETS:
+            return
+        KeyMappingDialog(
+            self.root,
+            target,
+            self.key_mappings[target],
+            lambda mapping: self._apply_key_mapping(target, mapping),
+        )
+
+    def _apply_key_mapping(self, target, mapping):
+        previous = self.key_mappings[target]
+        self.key_mappings[target] = custom_keymap(target, mapping)
+        try:
+            self._save_settings()
+        except OSError as exc:
+            self.key_mappings[target] = previous
+            messagebox.showerror("无法保存按键映射", str(exc), parent=self.root)
+            return False
+        self._update_keymap_controls()
+        return True
 
     def _scale_changed(self):
         target = self.target.get()
@@ -772,6 +921,7 @@ class ConverterApp:
                 display_scale=self.display_scale.get(),
                 crash_trace=self.crash_trace.get(),
                 trace_on_start=self.trace_on_start.get(),
+                key_mapping=dict(self.key_mappings.get(self.target.get(), {})),
             )
             config.validate()
         except Exception as exc:
@@ -784,37 +934,7 @@ class ConverterApp:
         ):
             return
         try:
-            SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-            SETTINGS.write_text(
-                json.dumps(
-                    dict(
-                        sdk=self.sdk.get()
-                        if self.target.get() == "9288"
-                        else self.sdk_paths["9288"],
-                        sdk9288t=self.sdk.get()
-                        if self.target.get() == "9288t"
-                        else self.sdk_paths["9288t"],
-                        sdk9288s=self.sdk.get()
-                        if self.target.get() == "9288s"
-                        else self.sdk_paths["9288s"],
-                        sdktsw600=self.sdk.get()
-                        if self.target.get() == "tsw600"
-                        else self.sdk_paths["tsw600"],
-                        target=self.target.get(),
-                        display_scale9288t=self.display_scale.get()
-                        if self.target.get() == "9288t"
-                        else self.display_scales["9288t"],
-                        toolchain=self.toolchain.get(),
-                        rom8=self.rom8.get(),
-                        rome=self.rome.get(),
-                        external_resources=self.external_resources.get(),
-                        crash_trace=self.crash_trace.get(),
-                        trace_on_start=self.trace_on_start.get(),
-                    ),
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
+            self._save_settings()
         except OSError as exc:
             messagebox.showerror("无法保存编译设置", str(exc), parent=self.root)
             return
@@ -836,6 +956,41 @@ class ConverterApp:
         self.detail.configure(text="检查输入文件与编译环境…")
         self.worker = ConversionWorker(self.events)
         threading.Thread(target=self.worker.run, args=(config,), daemon=True).start()
+
+    def _save_settings(self):
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS.write_text(
+            json.dumps(
+                dict(
+                    sdk=self.sdk.get() if self.target.get() == "9288" else self.sdk_paths["9288"],
+                    sdk9288t=self.sdk.get()
+                    if self.target.get() == "9288t"
+                    else self.sdk_paths["9288t"],
+                    sdk9288s=self.sdk.get()
+                    if self.target.get() == "9288s"
+                    else self.sdk_paths["9288s"],
+                    sdktsw600=self.sdk.get()
+                    if self.target.get() == "tsw600"
+                    else self.sdk_paths["tsw600"],
+                    target=self.target.get(),
+                    display_scale9288t=self.display_scale.get()
+                    if self.target.get() == "9288t"
+                    else self.display_scales["9288t"],
+                    toolchain=self.toolchain.get(),
+                    rom8=self.rom8.get(),
+                    rome=self.rome.get(),
+                    external_resources=self.external_resources.get(),
+                    crash_trace=self.crash_trace.get(),
+                    trace_on_start=self.trace_on_start.get(),
+                    key_mappings={
+                        target: custom_keymap(target, self.key_mappings[target])
+                        for target in KEYMAP_TARGETS
+                    },
+                ),
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     def cancel(self):
         if self.worker and self.running:

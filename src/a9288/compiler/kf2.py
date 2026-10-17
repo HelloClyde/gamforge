@@ -29,6 +29,19 @@ APP_RAM_END = 0x02800000
 
 APP_MAX_PAYLOAD_SIZE = APP_RAM_END - APP_LOAD_ADDRESS
 
+# Both KF2 icons have a 12-byte descriptor and packed 2-bit pixels. Keep
+# the file header/icons outside the linked payload's address-space budget.
+KF2_OVERHEAD_SIZE = HEADER_SIZE + (12 + 40 * 40 // 4) + (12 + 16 * 16 // 4)
+
+
+def max_kf2_payload_size(target: str = "9288") -> int:
+    from a9288.targets import target_profile
+
+    profile = target_profile(target)
+    if profile.executable_format != "KF2":
+        raise ValueError(f"{profile.name} requires {profile.executable_format}, not KF2")
+    return profile.max_exe_bytes - KF2_OVERHEAD_SIZE
+
 
 def write_sdk_header(path: Path, data: bytes) -> None:
     lines = []
@@ -135,11 +148,6 @@ def pack_kf2(
     profile = target_profile(target)
     if profile.executable_format != "KF2":
         raise ValueError(f"{profile.name} requires {profile.executable_format}, not KF2")
-    if len(payload) > APP_MAX_PAYLOAD_SIZE:
-        raise SystemExit(
-            "9288 KF2 payload is too large for the application RAM window: "
-            f"{len(payload)} bytes, maximum {APP_MAX_PAYLOAD_SIZE}"
-        )
     if not app_name or len(app_name) > 15 or b"\0" in app_name:
         raise ValueError("KF2 name must contain 1-15 bytes and no embedded NUL")
     if icon_root is None and profile.name == "9288T":
@@ -156,6 +164,13 @@ def pack_kf2(
         icon2 = read_icon(icon_root / "ico2.bin", 16, 16)
     code_offset = HEADER_SIZE + len(icon1) + len(icon2)
     total_size = code_offset + len(payload)
+    if code_offset != KF2_OVERHEAD_SIZE:
+        raise AssertionError(f"Unexpected KF2 header/icon overhead: {code_offset}")
+    if total_size > profile.max_exe_bytes:
+        raise SystemExit(
+            f"{profile.name} KF2 EXE is too large (including header and icons): "
+            f"{total_size} bytes, maximum {profile.max_exe_bytes}"
+        )
     name = app_name.ljust(16, b"\0")
     header = struct.pack(
         "<IIHH16sIIIII",

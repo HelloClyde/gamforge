@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamforge"
-version = "1.4.0"
+version = "1.5.0"
 description = "Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 applications."
 readme = "README.md"
 requires-python = ">=3.11"

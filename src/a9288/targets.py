@@ -15,13 +15,16 @@ class Target:
     icon_size: int = 40
     d300_magic: int = 0x12345678
     category: str = "娱乐"
+    # Inclusive *whole EXE file* limit. Preserve the historical < 1 MiB
+    # boundary for other targets; the 9288T expansion is experimental.
+    max_exe_bytes: int = 1024 * 1024 - 1
 
 
 TARGETS = {
     "9288": Target("9288", 320, 240, "2x", "Down_Include", 0x0008),
     # Match the program class used by the supported 9288T firmware launcher.
     # Plain SDK category 8 is insufficient for its system/program entry lookup.
-    "9288t": Target("9288T", 240, 160, "1.5x-sharp", "include", 0x0208),
+    "9288t": Target("9288T", 240, 160, "1.5x-sharp", "include", 0x0208, max_exe_bytes=2621440),
     # The S is a distinct D300/touchscreen platform, not a resized KF2 host.
     "9288s": Target("9288S", 160, 240, "1x", "Down_Include", 0, "D300", 32),
     "tsw600": Target(

@@ -71,6 +71,12 @@ int c6502_native_t_key_message(T_WORD message, T_GUI_WPARAM key, T_GUI_LPARAM fl
     /* Physical Help is MSG_HELP on the real T GUI. Official Fumo maps
        +0x7fd to scan 87. KEYUP still releases the shared held state. */
     if (message == MSG_HELP) { down = 1; key = SCANCODE_HELP; }
+    /* Real T IAL sends MSG_HOTKEY (0x7fe) for Start/Translate/Longman/Exam,
+       then ordinary KEYUP with the same scan. Reuse the held bit so a
+       duplicate raw KEYDOWN cannot deliver a second guest action. Do not
+       reinterpret unrelated host hotkeys (especially power) as game input. */
+    if (message == MSG_HOTKEY &&
+        (key == SCANCODE_START || (key >= 116u && key <= 118u))) down = 1;
     if (native_is_key_message(message) || message >= 0x7fdu) {
         c6502_u32 n = c6502_t_gui_trace_count++, *v;
         /* Preserve startup evidence as well as the most recent key messages. */
@@ -98,8 +104,13 @@ int c6502_native_t_key_message(T_WORD message, T_GUI_WPARAM key, T_GUI_LPARAM fl
         ++c6502_t_gui_power_messages;
         return 0;
     }
+    /* Host modifier state follows the physical Shift keys only. Mapping
+       another function key to guest Shift must not latch KS_SHIFT or the
+       Shift+D debugger chord on the host. */
+    if (key == SCANCODE_LEFTSHIFT || key == SCANCODE_RIGHTSHIFT || key == SCANCODE_SHIFT) {
+        native_t_shift(down); return 1;
+    }
     if (key >= 128u || (code = map_key((T_UHWORD)key)) == 0xffu) return 0;
-    if (code == 0x28u) { native_t_shift(down); return 1; }
     bit = (c6502_u8)(1u << (key & 7u));
     held = &c6502_t_gui_held[key >> 3];
     if (up) {

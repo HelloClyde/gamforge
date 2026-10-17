@@ -1,6 +1,7 @@
 #include "Dsys.h"
 #include "CRTL/malloc.h"
 #include "c6502_native_runtime.h"
+#include "c6502_native_keymap.h"
 #include "c6502_native_bridge_ids.h"
 #include "c6502_native_host.h"
 
@@ -38,10 +39,12 @@
    ST1LD determines the IRQ period; SysTimer1Open selects IRQs per message. */
 #define C6502_TIMER_SOURCE_HZ 10000u
 
-extern const c6502_u8 c6502_game_image_lzss_start[];
-extern const c6502_u8 c6502_game_image_lzss_end[];
-extern const c6502_u8 c6502_boot_snapshot_lzss_start[];
-extern const c6502_u8 c6502_boot_snapshot_lzss_end[];
+#ifndef C6502_EXTERNAL_RESOURCES
+extern c6502_u8 c6502_game_image_start[];
+extern c6502_u8 c6502_game_image_end[];
+#endif
+extern const c6502_u8 c6502_boot_snapshot_start[];
+extern const c6502_u8 c6502_boot_snapshot_end[];
 extern const c6502_u16 c6502_dispatch_bank_starts[];
 extern const c6502_u16 c6502_dispatch_bank_starts_end[];
 extern const c6502_u16 c6502_dispatch_offsets[];
@@ -70,8 +73,8 @@ volatile c6502_u32 c6502_validation_keys[32][4];
 static c6502_u16 c6502_heap_begin;
 static c6502_u16 c6502_heap_end;
 static c6502_u16 c6502_allocations[128][2];
-/* Both buffers are fully overwritten by c6502_native_prepare(). Keeping
-   them out of .bss avoids a redundant 64 KiB clear at the KF2 entry point. */
+/* The raw boot snapshot is copied here once during prepare. Keeping the
+   working RAM out of .bss avoids clearing it before that full overwrite. */
 static c6502_u8 c6502_boot_raw[C6502_BOOT_RAW_SIZE]
     __attribute__((section(".noinit"), aligned(4)));
 /* The snapshot's trailing 32 KiB already IS the game RAM image.  Use it
@@ -231,42 +234,6 @@ static c6502_u8 native_heap_free(c6502_u16 pointer)
             return 1u;
         }
     return 0u;
-}
-
-static int lzss_expand(
-    const c6502_u8 *input, const c6502_u8 *end,
-    c6502_u8 *output, c6502_u32 output_size
-)
-{
-    c6502_u32 produced = 0u;
-    while (produced < output_size && input < end) {
-        c6502_u8 flags = *input++;
-        c6502_u32 bit;
-        for (bit = 0u; bit < 8u && produced < output_size; ++bit) {
-            if (flags & (1u << bit)) {
-                if (input >= end)
-                    return 0;
-                output[produced++] = *input++;
-            } else {
-                c6502_u16 token;
-                c6502_u32 distance;
-                c6502_u32 length;
-                c6502_u32 index;
-                if (input + 1 >= end)
-                    return 0;
-                token = (c6502_u16)(input[0] | ((c6502_u16)input[1] << 8));
-                input += 2;
-                distance = (token & 0x0fffu) + 1u;
-                length = (token >> 12) + 3u;
-                if (distance > produced || produced + length > output_size)
-                    return 0;
-                index = produced - distance;
-                while (length--)
-                    output[produced++] = output[index++];
-            }
-        }
-    }
-    return produced == output_size;
 }
 
 static c6502_u16 get16(c6502_u32 address)
@@ -1140,6 +1107,18 @@ static void native_lcd_write(c6502_u16 address)
 
 static c6502_u8 map_key(T_UHWORD key)
 {
+#ifdef C6502_TARGET_9288T
+#if C6502_KEYMAP_COUNT > 0
+    /* 256 distinguishes an absent override from an explicitly disabled
+       physical key (255). This is before, not after, FIFO edge handling. */
+    c6502_u32 custom = native_keymap_lookup(key, 256u);
+    if (custom != 256u) return (c6502_u8)custom;
+#endif
+    /* T firmware IAL matrix rows 0..3 / column 7: 59,116,117,118.
+       Only Start has an SDK name. Translate/Longman/Exam are NOT F2/F3/F4
+       (the legacy H_E_DICT/CARD/TIME aliases describe a different layout). */
+    enum { T_SCAN_TRANSLATE = 116, T_SCAN_LONGMAN = 117, T_SCAN_EXAM = 118 };
+#endif
     switch (key) {
     case SCANCODE_1: return 0x08u; case SCANCODE_2: return 0x09u;
     case SCANCODE_3: return 0x0au; case SCANCODE_4: return 0x0bu;
@@ -1162,6 +1141,11 @@ static c6502_u8 map_key(T_UHWORD key)
     case SCANCODE_ENTER: case SCANCODE_KEYPADENTER: return 0x2fu;
     case SCANCODE_ESCAPE: return 0x2eu;
 #ifdef C6502_TARGET_9288T
+    /* Default physical hotkeys -> original 4980 function keys. */
+    case SCANCODE_START: return 0x2bu; /* Start -> Search */
+    case T_SCAN_TRANSLATE: return 0x29u; /* Translate -> Insert */
+    case T_SCAN_LONGMAN: return 0x2au; /* Longman -> Modify */
+    case T_SCAN_EXAM: return 0x2cu; /* Exam -> Delete */
     /* A-series KEY_SHIFT aliases KEY_ZY ($28), NOT KEY_INPUT ($20). */
     case SCANCODE_LEFTSHIFT: case SCANCODE_RIGHTSHIFT:
     case SCANCODE_SHIFT: return 0x28u;
@@ -3714,20 +3698,19 @@ int c6502_native_prepare(void)
 #ifdef C6502_EXTERNAL_RESOURCES
     if (!nr_open()) { nr_close(); return 0; }
 #else
-    c6502_native_state.game = (c6502_u8 *)malloc(C6502_GAME_SIZE);
-    if (!c6502_native_state.game)
+    if ((c6502_u32)(c6502_game_image_end - c6502_game_image_start) != C6502_GAME_SIZE)
         return 0;
-    if (!lzss_expand(c6502_game_image_lzss_start, c6502_game_image_lzss_end,
-            c6502_native_state.game, C6502_GAME_SIZE)) {
-        c6502_native_release(); return 0;
-    }
+    /* The OS has already loaded these writable .data bytes. Do not allocate
+       or copy the entire GAM again. One App_Main session per loader image;
+       resource writes are private to this loaded image, not the EXE file. */
+    c6502_native_state.game = c6502_game_image_start;
 #endif
-    if (!lzss_expand(c6502_boot_snapshot_lzss_start,
-            c6502_boot_snapshot_lzss_end, c6502_boot_raw,
-            C6502_BOOT_RAW_SIZE)) {
+    if ((c6502_u32)(c6502_boot_snapshot_end - c6502_boot_snapshot_start) !=
+            C6502_BOOT_RAW_SIZE) {
         c6502_native_release();
         return 0;
     }
+    bytes_copy(c6502_boot_raw, c6502_boot_snapshot_start, C6502_BOOT_RAW_SIZE);
     snapshot = c6502_boot_raw;
     if (snapshot[0] != 'C' || snapshot[1] != '6' || snapshot[2] != '5') {
         c6502_native_release();
@@ -3968,12 +3951,12 @@ void c6502_native_perf_end(void)
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=S-SOFTKEY-1\nclock_hz=256\n";
 #elif defined(C6502_PROFILE_OTHER)
 #ifdef C6502_TARGET_9288T
-    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-GUI-KEYS-2\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=T-KEYMAP-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 6]\nbuild=OTHER-PROFILE-1\nclock_hz=256\n";
 #endif
 #elif defined(C6502_TARGET_9288T)
-    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-GUI-KEYS-2\nclock_hz=256\n";
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-KEYMAP-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
 #endif
@@ -4017,14 +4000,21 @@ void c6502_native_perf_end(void)
             native_log_csv(file, "t_gui_raw", c6502_t_gui_trace[16u + ((n-16u)%48u)], 5u);
     }
 #endif
+    native_log_value(file, "resource_compression_enabled", 0u);
+    native_log_value(file, "resource_full_image_heap_bytes", 0u);
+    native_log_value(file, "resource_crc_enabled", 0u);
 #ifdef C6502_EXTERNAL_RESOURCES
     native_log_value(file, "external_resources", 1u);
+    native_log_value(file, "embedded_resource_zero_copy", 0u);
     native_log_value(file, "resource_cache_bytes", NR_SLOTS*NR_PAGE);
     native_log_value(file, "resource_cache_hits", nr_hits);
     native_log_value(file, "resource_cache_misses", nr_misses);
     native_log_value(file, "resource_dirty_pages", nr_dirty_count);
     native_log_value(file, "resource_writes", nr_writes);
     native_log_value(file, "resource_error", nr_error);
+#else
+    native_log_value(file, "external_resources", 0u);
+    native_log_value(file, "embedded_resource_zero_copy", 1u);
 #endif
 #ifdef NATIVE_TITLE
     (void)fs_fwrite("game=", 1, 5, file);
@@ -4182,8 +4172,7 @@ void c6502_native_release(void)
         }
     }
     save_file_index();
-    if (c6502_native_state.game)
-        free(c6502_native_state.game);
+    /* Embedded resources belong to the loader's .data, not the CRTL heap. */
     c6502_native_state.game = 0;
 }
 

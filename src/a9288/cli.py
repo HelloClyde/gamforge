@@ -15,6 +15,14 @@ from pathlib import Path
 
 from a9288.app_options import compiler_lock, default_app_name, encode_app_name, inspect_game
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
+from a9288.keymap import (
+    KEYMAP_TARGETS,
+    custom_keymap,
+    keymap_arguments,
+    keymap_help,
+    normalize_keymap,
+    parse_keymap,
+)
 from a9288.paths import DEPENDENCIES, WORK, child_environment, task_command
 from a9288.resources import pack_resources
 from a9288.save_paths import game_save_directory, game_save_name
@@ -23,6 +31,8 @@ from a9288.targets import TARGETS, TOUCH_TARGETS
 DEFAULT_SDK = Path(os.environ.get("A9288_SDK", DEPENDENCIES / "sdk9288"))
 DEFAULT_TOOLCHAIN = Path(os.environ.get("A9288_TOOLCHAIN", DEPENDENCIES / "toolchain"))
 MAX_KF2_BYTES = 1024 * 1024
+# Legacy default boundary retained for callers; per-target inclusive limits
+# come only from Target.max_exe_bytes (9288T: 2.5 MiB including KF2 overhead).
 
 
 def publish_file(source: Path, destination: Path) -> None:
@@ -45,10 +55,12 @@ def convert(args) -> None:
     target = getattr(args, "target", "9288").lower()
     profile = target_profile(target)
     scale = display_scale(target, getattr(args, "display_scale", None))
+    key_mapping = parse_keymap(target, getattr(args, "key_map", None))
     view_width, view_height, view_x, view_y = display_geometry(target, scale)
     if target == "9288t":
         print(
-            "提示：9288T 已通过部分游戏的模拟器启动检查，仍需真机验证，不保证任意 GAM 兼容。",
+            "提示：9288T 已通过部分游戏的模拟器启动检查；2.5 MiB EXE 上限为实验性，"
+            "尚未经真机验证，不保证任意 GAM 兼容。",
             flush=True,
         )
     elif target in TOUCH_TARGETS:
@@ -94,6 +106,7 @@ def convert(args) -> None:
     )
     if args.icon:
         command += ["--icon", str(args.icon.resolve())]
+    command += keymap_arguments(target, key_mapping)
     if getattr(args, "profile_other", False):
         command.append("--profile-other")
     crash_trace = bool(
@@ -109,8 +122,11 @@ def convert(args) -> None:
     print("+", " ".join(command), flush=True)
     subprocess.run(command, env=child_environment(), check=True)
     size = staged.stat().st_size
-    if size >= MAX_KF2_BYTES:
-        raise ValueError(f"生成 EXE 为 {size} 字节，超过当前 1 MiB 限制；未替换原输出文件。")
+    if size > profile.max_exe_bytes:
+        raise ValueError(
+            f"生成 {profile.name} EXE 为 {size} 字节，超过完整文件上限 "
+            f"{profile.max_exe_bytes} 字节（含头部和图标）；未替换原输出文件。"
+        )
     digest = hashlib.sha256(staged.read_bytes()).hexdigest()
     report = json.loads((work / "c6502-s1c33-direct/report.json").read_text(encoding="utf-8"))
     report.update(
@@ -119,6 +135,9 @@ def convert(args) -> None:
             "executable_format": profile.executable_format,
             "output_exe": str(output),
             "output_exe_bytes": size,
+            "output_exe_max_bytes": profile.max_exe_bytes,
+            "output_exe_limit_includes_header_icons": True,
+            "output_exe_limit_experimental": target == "9288t",
             "output_exe_sha256": digest,
             "output_kf2": str(output),
             "output_kf2_bytes": size,
@@ -168,6 +187,9 @@ def convert(args) -> None:
             "display_y": view_y,
             "target_experimental": target != "9288",
             "soft_keyboard": target in TOUCH_TARGETS,
+            "key_mapping_supported": target in KEYMAP_TARGETS,
+            "key_mapping": normalize_keymap(target, key_mapping),
+            "key_mapping_overrides": custom_keymap(target, key_mapping),
         }
     )
     if external:
@@ -219,8 +241,15 @@ def convert(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("game", type=Path, help="input .gam file")
+    parser.add_argument("game", type=Path, nargs="?", help="input .gam file")
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
+    parser.add_argument(
+        "--key-map",
+        action="append",
+        metavar="HOST=GUEST",
+        help="自定义实体键，可重复；仅 9288/9288T，例如 start=help（用 --list-key-maps 查看）",
+    )
+    parser.add_argument("--list-key-maps", action="store_true", help="列出目标机型的按键映射名称")
     parser.add_argument(
         "--display-scale",
         choices=("1x", "1.5x", "1.5x-linear", "1.5x-sharp", "2x"),
@@ -257,6 +286,11 @@ def main() -> None:
     parser.add_argument("--rom8", type=Path, default=DEFAULT_ROM8)
     parser.add_argument("--rome", type=Path, default=DEFAULT_ROME)
     args = parser.parse_args()
+    if args.list_key_maps:
+        print(keymap_help(args.target))
+        return
+    if args.game is None:
+        parser.error("转换时必须指定输入 GAM 文件。")
     if args.target == "9288t" and args.sdk == DEFAULT_SDK:
         args.sdk = Path(os.environ.get("A9288T_SDK", DEPENDENCIES / "sdk9288t"))
     elif args.target == "9288s" and args.sdk == DEFAULT_SDK:

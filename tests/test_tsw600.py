@@ -89,6 +89,7 @@ def test_gui_600_keeps_independent_sdk_and_reports_shared_layout():
         display_scale=tk.StringVar(interpreter, "1x"),
         scale_combo=Mock(),
         _scale_changed=Mock(),
+        _update_keymap_controls=Mock(),
         _preview=Mock(),
     )
     ConverterApp._target_changed(app)

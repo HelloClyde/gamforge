@@ -90,6 +90,7 @@ def test_gui_target_switch_refreshes_icon_without_resetting_selection(tmp_path):
         display_scale=tk.StringVar(interpreter, "2x"),
         scale_combo=Mock(),
         _scale_changed=Mock(),
+        _update_keymap_controls=Mock(),
         icon_path=tmp_path / "my-icon.png",
         _preview=Mock(),
     )
@@ -214,6 +215,7 @@ def test_gui_remembers_t_scale_across_targets():
         display_scale=tk.StringVar(interpreter, "1.5x"),
         scale_combo=Mock(),
         _scale_changed=Mock(),
+        _update_keymap_controls=Mock(),
         _preview=Mock(),
     )
     ConverterApp._target_changed(app)

@@ -1250,7 +1250,7 @@ static void runtime_compare16"""
             self.skipTest("host gcc is not installed")
         runtime = (DATA / "runtime/c6502_native_runtime.c").read_text(encoding="utf-8")
         heap = runtime.split("static void native_heap_init", 1)[1].split(
-            "static int lzss_expand", 1
+            "static c6502_u16 get16", 1
         )[0]
         lcd = runtime.split("static c6502_u16 lcd_address", 1)[1].split("static void pixel", 1)[0]
         source = (

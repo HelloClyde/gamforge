@@ -21,6 +21,7 @@ from a9288.compiler import kf2 as build_9288
 from a9288.compiler.boot import DEFAULT_ROM8, DEFAULT_ROME
 from a9288.compiler.fast_helpers import fast_helper
 from a9288.compiler.s1c33_compat import preserve_comparison_flags
+from a9288.keymap import c_keymap_config, parse_keymap
 from a9288.paths import DATA, WORK, child_environment, task_command
 from a9288.resources import HEADER, c_resource_config, pack_resources
 from a9288.save_paths import c_save_config
@@ -48,6 +49,46 @@ SUPPORTED_BRIDGES = runtime_supported_bridges()
 def run(command: list[str]) -> None:
     print("+", " ".join(command))
     subprocess.run(command, env=child_environment(), check=True)
+
+
+def linker_payload_args(target: str) -> list[str]:
+    """Bound the entire load span, including BSS/noinit, before KF2 packing."""
+    if target_profile(target).executable_format != "KF2":
+        return []  # D300 retains the linker's historical 1 MiB payload window.
+    limit = build_9288.APP_LOAD_ADDRESS + build_9288.max_kf2_payload_size(target)
+    return [f"-Wl,--defsym=__app_payload_limit={limit:#x}"]
+
+
+def link_native_image(command: list[str], map_path: Path, target: str, external: bool) -> None:
+    """Explain size failures without silently switching resource formats."""
+    # Reused work directories may contain a map from a previous oversized
+    # build. An early linker error must not be diagnosed using that old size.
+    map_path.unlink(missing_ok=True)
+    try:
+        run(command)
+    except subprocess.CalledProcessError as link_error:
+        limit = (
+            build_9288.max_kf2_payload_size(target)
+            if target_profile(target).executable_format == "KF2"
+            else build_9288.APP_MAX_PAYLOAD_SIZE
+        )
+        try:
+            size = (
+                build_9288.read_map_symbol(map_path, "__payload_end") - build_9288.APP_LOAD_ADDRESS
+            )
+        except (OSError, SystemExit):
+            raise link_error
+        if size > limit:
+            advice = (
+                "请勾选“EXE＋外置资源文件”或添加 --external-resources；外置 RES 同样不压缩。"
+                if not external
+                else "外置资源后原生代码及运行库仍超过机型上限，需进一步缩减代码体积。"
+            )
+            raise SystemExit(
+                f"{target_profile(target).name} 链接镜像 {size} 字节（含 BSS/noinit），"
+                f"超过可用 {limit} 字节。{advice}未替换原输出 EXE。"
+            ) from None
+        raise
 
 
 def undefined_symbols(readelf: str, obj: Path) -> list[str]:
@@ -472,6 +513,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
     parser.add_argument("--target", type=str.lower, choices=tuple(TARGETS), default="9288")
+    parser.add_argument("--key-map", action="append", metavar="HOST=GUEST")
     parser.add_argument(
         "--display-scale",
         choices=("1x", "1.5x", "1.5x-linear", "1.5x-sharp", "2x"),
@@ -500,6 +542,7 @@ def main() -> None:
     name_bytes = encode_app_name(app_name)
     profile = target_profile(args.target)
     scale = display_scale(args.target, args.display_scale)
+    key_mapping = parse_keymap(args.target, args.key_map)
     print(f"[GAM9288_STAGE] prepare|检查 {profile.name} SDK 与工具链", flush=True)
 
     clang = build_9288.find_tool(args.toolchain, "clang")
@@ -514,7 +557,11 @@ def main() -> None:
     build_9288.prepare_sdk_headers(args.sdk.resolve(), sdk_include, target=args.target)
     config = runtime_build / "c6502_native_app_config.h"
     trace_build_id = None
-    config_text = c_name_definition(app_name) + c_save_config(args.game)
+    config_text = (
+        c_name_definition(app_name)
+        + c_save_config(args.game)
+        + c_keymap_config(args.target, key_mapping)
+    )
     resource = None
     if args.external_resources:
         resource_name, resource = pack_resources(args.game.read_bytes())
@@ -662,18 +709,22 @@ def main() -> None:
     elf = args.output.with_suffix(".elf")
     map_path = args.output.with_suffix(".map")
     print("[GAM9288_STAGE] link|链接 S1C33 原生程序", flush=True)
-    run(
+    link_native_image(
         [
             clang,
             "--target=s1c33-none-elf",
             "-nostdlib",
+            *linker_payload_args(args.target),
             "-Wl,-T," + str(DATA / "runtime" / "c6502_native_9288.ld"),
             "-Wl,-Map," + str(map_path),
             "-Wl,--gc-sections",
             *(str(obj) for obj in objects),
             "-o",
             str(elf),
-        ]
+        ],
+        map_path,
+        args.target,
+        args.external_resources,
     )
     remaining = undefined_symbols(readelf, elf)
     if remaining:
