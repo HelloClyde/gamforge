@@ -249,6 +249,29 @@ def isolated_environment(work):
     return env
 
 
+def read_boot_snapshot(report):
+    """Validate the current raw snapshot contract, not retired compressed keys."""
+    object_name = report.get("boot_snapshot_object")
+    require(
+        isinstance(object_name, str) and bool(object_name.strip()),
+        "Conversion report is missing boot_snapshot_object",
+    )
+    require(report.get("boot_snapshot_compression") == "none", "Expected an uncompressed snapshot")
+    object_path = Path(object_name)
+    require(object_path.suffix == ".o" and object_path.is_file(), "Missing boot snapshot object")
+    snapshot = object_path.with_suffix(".bin")
+    require(snapshot.is_file(), "Missing raw boot snapshot data")
+    boot = snapshot.read_bytes()
+    require(
+        report.get("boot_snapshot_bytes") == len(boot), "Boot snapshot size differs from report"
+    )
+    require(boot[:8] == b"C65BOOT\0" and len(boot) >= 64, "Invalid boot snapshot header")
+    boot_version, ram_size, pc, _regs, _flags, banks = struct.unpack_from("<6I", boot, 8)
+    require(boot_version == 2 and len(boot) == 64 + ram_size, "Invalid snapshot layout")
+    require(pc == 0x5046 and banks == 16, "Wrong synthetic boot entry/banks")
+    return snapshot, boot
+
+
 def verify_bundle(bundle, work):
     require(not work.exists(), "Verification directory must be new")
     work.mkdir(parents=True)
@@ -333,12 +356,7 @@ def verify_bundle(bundle, work):
         require(report["display_scale"] == expected_scale, "Wrong default display scale")
         magic = b"D300" if target in ("9288s", "tsw600") else b"KF2\0"
         require(output.read_bytes()[:4] == magic, "Wrong device executable format")
-        snapshot = Path(report["compressed_boot_snapshot_object"]).with_suffix(".bin")
-        boot = snapshot.read_bytes()
-        require(boot[:8] == b"C65BOOT\0" and len(boot) >= 64, "Invalid boot snapshot header")
-        boot_version, ram_size, pc, _regs, _flags, banks = struct.unpack_from("<6I", boot, 8)
-        require(boot_version == 2 and len(boot) == 64 + ram_size, "Invalid snapshot layout")
-        require(pc == 0x5046 and banks == 16, "Wrong synthetic boot entry/banks")
+        snapshot, boot = read_boot_snapshot(report)
         resource_sha256 = None
         if external:
             resource = output.parent / report["resource_file"]

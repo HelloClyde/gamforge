@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Full 包 CI 修复
+
+- 修复三平台 Full 验证仍读取旧压缩快照字段导致的 `Path(None)` 错误；改用当前未压缩启动快照，并核对对象、长度、格式与入口，不跳过转换验证。
+- 补充四机型、中文路径搬迁和外置 RES 的验证器回归；CI 失败时保留合成测试的转换日志，不上传游戏数据。
+
 ### 默认全套分发
 
 - 后续正式发布默认只提供 Windows x64、macOS arm64 和 macOS x86_64 Full 包，包含 Python/Tk/Pillow、启动 helper、四种输出机型所需 SDK、A 系列固件与对应宿主 S1C33 工具链；Windows 同时包含 app-local VC 运行库，无需用户另装转换依赖，不携带游戏。

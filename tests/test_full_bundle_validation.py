@@ -335,3 +335,131 @@ def test_windows_verified_extraction_needs_no_ditto(validator, tmp_path):
     )
     root = validator.extract_verified(archive, tmp_path / "new", "GAMForge", windows=True)
     assert (root / "sub/data").read_bytes() == b"fixture"
+
+
+def raw_snapshot_report(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    snapshot = folder / "c6502_boot_snapshot.bin"
+    data = bytearray(64 + 32768)
+    data[:8] = b"C65BOOT\0"
+    struct.pack_into("<6I", data, 8, 2, 32768, 0x5046, 0, 0, 16)
+    snapshot.write_bytes(data)
+    object_path = snapshot.with_suffix(".o")
+    object_path.write_bytes(b"synthetic ELF object")
+    return {
+        "boot_snapshot_object": str(object_path),
+        "boot_snapshot_bytes": len(data),
+        "boot_snapshot_compression": "none",
+        "compressed_boot_snapshot_object": None,
+        "compressed_boot_snapshot_bytes": 0,
+    }
+
+
+def test_current_raw_snapshot_report_with_retired_null_key(validator, tmp_path):
+    report = raw_snapshot_report(tmp_path / "中文 快照")
+    snapshot, data = validator.read_boot_snapshot(report)
+    assert snapshot.name == "c6502_boot_snapshot.bin"
+    assert len(data) == 32832
+
+
+@pytest.mark.parametrize("object_name", [None, "", 42, []])
+def test_missing_raw_snapshot_is_not_hidden_by_legacy_key(validator, tmp_path, object_name):
+    report = raw_snapshot_report(tmp_path)
+    report["compressed_boot_snapshot_object"] = report["boot_snapshot_object"]
+    report["boot_snapshot_object"] = object_name
+    with pytest.raises(ValueError, match="missing boot_snapshot_object"):
+        validator.read_boot_snapshot(report)
+
+
+@pytest.mark.parametrize("damage", ["object", "data", "size", "compression", "header", "pc"])
+def test_raw_snapshot_contract_is_checked(validator, tmp_path, damage):
+    report = raw_snapshot_report(tmp_path)
+    object_path = Path(report["boot_snapshot_object"])
+    snapshot = object_path.with_suffix(".bin")
+    if damage == "object":
+        object_path.unlink()
+    elif damage == "data":
+        snapshot.unlink()
+    elif damage == "size":
+        report["boot_snapshot_bytes"] += 1
+    elif damage == "compression":
+        report["boot_snapshot_compression"] = "lz4"
+    else:
+        data = bytearray(snapshot.read_bytes())
+        if damage == "header":
+            data[:8] = b"BROKEN!!"
+        else:
+            struct.pack_into("<I", data, 16, 0x6000)
+        snapshot.write_bytes(data)
+    with pytest.raises(ValueError):
+        validator.read_boot_snapshot(report)
+
+
+@pytest.mark.parametrize("macos", [False, True])
+def test_verify_bundle_consumes_current_reports_for_all_five_modes(
+    validator, tmp_path, monkeypatch, macos
+):
+    """Exercise the real report-consumption loop; only external CLI calls are faked."""
+    monkeypatch.setattr(validator.sys, "platform", "darwin" if macos else "win32")
+    monkeypatch.setattr(validator, "isolated_environment", lambda work: {})
+    relative_cli = "GAMForge.app/Contents/MacOS/GAMForge" if macos else "GAMForge-CLI.exe"
+    relative_deps = "GAMForge.app/Contents/Resources/dependencies" if macos else "dependencies"
+    bundle = tmp_path / "Full 输入" / "GAMForge"
+    cli = bundle / relative_cli
+    cli.parent.mkdir(parents=True)
+    cli.write_bytes(b"synthetic frozen CLI")
+    (bundle / relative_deps).mkdir(parents=True)
+    (bundle / "FULL-BUNDLE.json").write_text(
+        json.dumps({"targets": ["9288", "9288t", "9288s", "tsw600"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        validator.subprocess,
+        "check_output",
+        lambda *args, **kwargs: json.dumps(
+            {"self_test": "PASS", "boot_helper": True, "dependencies": {}}
+        ),
+    )
+    conversions = []
+
+    def run(command, **kwargs):
+        if command[0] == "codesign":
+            return
+        assert command[1] == "convert"
+        target = command[command.index("--target") + 1]
+        external = "--external-resources" in command
+        output = Path(command[command.index("--output") + 1])
+        current_bundle = Path(command[0]).parents[3] if macos else Path(command[0]).parent
+        output.write_bytes(b"D300" if target in ("9288s", "tsw600") else b"KF2\0")
+        report = raw_snapshot_report(output.parent / "objects")
+        report.update(
+            target=target,
+            external_resources=external,
+            standalone_link_complete=True,
+            runtime_interpreter_fallback=False,
+            output_exe_sha256=validator.digest(output),
+            sdk=str(current_bundle / relative_deps / "sdk"),
+            display_scale="1.5x-sharp" if target == "9288t" else "2x" if target == "9288" else "1x",
+        )
+        if external:
+            resource = output.parent / "synthetic.RES"
+            resource.write_bytes(validator.synthetic_game())
+            report.update(
+                resource_file=resource.name,
+                resource_sha256=validator.digest(resource),
+                resource_install_directory="A:\\系统\\数据\\",
+            )
+        output.with_suffix(".report.json").write_text(json.dumps(report), encoding="utf-8")
+        conversions.append((target, external))
+
+    monkeypatch.setattr(validator.subprocess, "run", run)
+    result = validator.verify_bundle(bundle, tmp_path / "isolated")
+    assert conversions == [
+        ("9288", False),
+        ("9288t", False),
+        ("9288s", False),
+        ("tsw600", False),
+        ("9288t", True),
+    ]
+    assert result["result"] == "PASS"
+    assert all(case["boot_snapshot_bytes"] == 32832 for case in result["cases"])
+    assert [case["relocated_bundle"] for case in result["cases"]] == [False] * 4 + [True]
