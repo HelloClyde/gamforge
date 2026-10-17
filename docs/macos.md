@@ -6,15 +6,14 @@
 ## 当前状态
 
 已加入 Apple Silicon `arm64` 与 Intel `x86_64` 的源码适配、`.app` / CLI 打包入口和
-双架构 CI。当前发布策略为 **Windows 和两种 Mac 均默认 Full**：后续 tag 必须在
+双架构 CI。从 v1.5.1 起 **Windows 和两种 Mac 均默认 Full**：tag 必须在
 三个平台的全套包构建和隔离转换全部成功后才能发布，不用轻量包代替失败的 Full 包。
 历史 v1.5.0 首次发布的是轻量包；新策略不会自动补齐历史附件。实际可下载文件
 以 Releases 为准，名称含 `full` 的资产才是依赖齐全的全套版。
-2026-10-16 的 [应用 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)
-在两个 Mac runner 上各执行 508 项测试（464 通过、44 项可选环境跳过），完成本机 helper、
-冻结 worker、ZIP 解压后签名、自检和实际 GUI 窗口检查。对应源提交为 `6610c689`。
-该历史记录不等于完整转换链已经通过；新的默认发布还要求同架构 S1C33 工具链
-和解压后的全套包转换验证通过，每次构建保留独立的验证记录。
+2026-10-17 的 [三平台 Full CI](https://github.com/HelloClyde/gamforge/actions/runs/39036573454)
+已在两个 Mac runner 上完成原生应用、S1C33 工具链、冻结 worker、解压后 GUI 和签名检查，
+并分别用 Full 包转换 9288、9288T、9288S、听说王600 的合成样例，以及中文路径搬迁后的
+9288T 外置 RES 样例。对应源提交为 `422bff3`；每次正式发布还会重新构建并保留独立验证记录。
 
 构建目标最低系统为 macOS 11；打包器检查每个 Mach-O 的实际最低版本，若依赖要求
 更高版本则拒绝生成误标的包。CI 运行于 macOS 15，不能据此宣称所有 macOS 11+

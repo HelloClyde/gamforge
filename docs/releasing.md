@@ -2,7 +2,7 @@
 
 ## 默认发布策略
 
-正式下载默认全部为 Full，不再让用户自行安装转换依赖：
+从 v1.5.1 起正式下载默认全部为 Full，不再让用户自行安装转换依赖：
 
 - Windows x64：`gamforge-<版本>-full-windows-x64.zip`。
 - Apple Silicon Mac：`gamforge-<版本>-full-macos-arm64.zip`。

@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 1.5.1 — 2026-10-17
 
 ### Full 包 CI 修复
 
@@ -9,7 +9,7 @@
 
 ### 默认全套分发
 
-- 后续正式发布默认只提供 Windows x64、macOS arm64 和 macOS x86_64 Full 包，包含 Python/Tk/Pillow、启动 helper、四种输出机型所需 SDK、A 系列固件与对应宿主 S1C33 工具链；Windows 同时包含 app-local VC 运行库，无需用户另装转换依赖，不携带游戏。
+- 从 v1.5.1 起正式发布默认只提供 Windows x64、macOS arm64 和 macOS x86_64 Full 包，包含 Python/Tk/Pillow、启动 helper、四种输出机型所需 SDK、A 系列固件与对应宿主 S1C33 工具链；Windows 同时包含 app-local VC 运行库，无需用户另装转换依赖，不携带游戏。
 - main、常规手动构建和 tag 自动组装 Full；SDK/固件来源与哈希固定，原生工具链按源码、补丁、构建脚本和宿主架构缓存。PR 仍生成开发用轻量测试包。
 - 发布门禁覆盖三平台解压后的冻结 CLI、四机型合成 GAM、中文路径搬迁与外置 RES；全部通过才上传 Full ZIP、SHA-256 和验证记录，失败不退回轻量包。独立跨工作流 Mac Full 验证保留为维护工具。
 - 保留历史发布记录：v1.5.0 首次上传的三平台轻量包不因本策略变为 Full；实际资产以 Releases 为准。Mac Full 仍使用 ad-hoc 签名，未经 Apple 公证。

@@ -45,7 +45,7 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 a
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
 4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动（听说王600 为“游戏”）。
 
-**发布策略已改为三平台默认 Full**：后续 tag 只有在 Windows、Apple Silicon Mac、Intel Mac
+**从 v1.5.1 起三平台默认 Full**：tag 只有在 Windows、Apple Silicon Mac、Intel Mac
 全套包均通过隔离转换检查后才发布，不以轻量包代替失败的 Full 包。
 这不追溯改变历史附件：v1.5.0 首次发布的是轻量包，v1.4.0 有 Windows Full；
 实际可下载文件仍以 Releases 附件为准，名称不含 `full` 的历史包需要自行配置依赖。
@@ -70,10 +70,10 @@ v1.3.0 起全套包包含四个输出目标所需依赖；v1.2.0 支持 9288 / 9
 解压即可转换，不需要安装 Python、Xcode、Homebrew 或另配 SDK/工具链。
 请按“关于本机”的芯片选择架构，不要把 Windows ZIP 改名为 Mac 版。
 
-两种 Mac 的原生应用构建、冻结 worker、解压后 GUI 和签名检查已通过
-[测试分支 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)。
-该记录只证明轻量应用通过，不代表历史 Full 已发布；新的发布流程还要求同架构原生工具链
-和全套包隔离转换检查通过，具体以每次 Release 的构建记录为准。
+两种 Mac 的原生应用、S1C33 编译链、解压后的 Full 包及隔离转换已通过
+[三平台 Full CI](https://github.com/HelloClyde/gamforge/actions/runs/39036573454)。
+每个平台均验证四种输出机型，以及中文路径搬迁后的外置 RES 转换；
+这不代表所有游戏或 BBK 真机全流程均已验证，具体以每次 Release 的构建记录为准。
 
 Mac 构建与源码运行方法见 [macOS 使用与打包](docs/macos.md)。Full 包包含
 Python/Tk/Pillow、本机启动 helper、对应 SDK、A 系列固件，以及
