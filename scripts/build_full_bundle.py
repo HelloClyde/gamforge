@@ -1,7 +1,7 @@
 """Assemble explicitly authorized offline dependencies; never include games.
 
-Normal public CI still builds the light package. Maintainers build the full
-bundle from supplied dependencies and upload it after an isolated conversion.
+Release CI builds light applications only as intermediate inputs, then invokes
+this packager and validates isolated conversions before publishing Full bundles.
 """
 
 import argparse

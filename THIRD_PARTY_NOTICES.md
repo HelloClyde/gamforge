@@ -16,11 +16,12 @@
 工具链来自 <https://github.com/autch/llvm-s1c33>，固定提交见 `toolchain/manifest.json`。
 LLVM 本身使用 Apache-2.0 WITH LLVM-exception；本项目提供 9288 GNU33 ABI 修正补丁。
 工具链单独构建和分发时保留上游 `llvm/LICENSE.TXT`、源码提交和补丁；并不将 LLVM
-改成 GPL 许可。轻量 ZIP 不含工具链；全套 ZIP 包含所需工具、LLVM 许可、补丁和来源记录。
+改成 GPL 许可。默认正式发布的 Full ZIP 包含对应宿主架构工具、LLVM 许可、补丁和来源记录；
+PR 开发测试包与历史轻量 ZIP 不含工具链。
 
 ## Python、GUI 与打包
 
-Windows 分发包由 PyInstaller 构建，包含 CPython、Tcl/Tk、Pillow 等组件。
+Windows / macOS 分发包由 PyInstaller 构建，包含 CPython、Tcl/Tk、Pillow 等组件。
 各组件保留其独立许可；PyInstaller 的 bootloader exception 允许构建应用分发包。
 发布脚本从实际构建环境收集 CPython、Pillow、PyInstaller 的许可证，以及冻结包中的
 Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本。缺失许可证时构建失败。
@@ -30,16 +31,20 @@ Tcl/Tk `license.terms`，放入包内 `licenses/`，并记录构建组件版本�
 
 9288 SDK 来自 **钳工**，感谢其提供的开发基础。
 
-全套包中的工具链使用 Microsoft Visual C++ 运行库，以 app-local 方式保留原始 x64 CRT DLL。
+Windows 全套包中的工具链使用 Microsoft Visual C++ 运行库，以 app-local 方式保留原始 x64 CRT DLL。
 文件取自已安装 Visual Studio Build Tools 的 `VC/Redist/MSVC/.../x64/Microsoft.VC142.CRT`，
 不从 Windows 系统目录抓取，不包含 debug_nonredist。Microsoft 组件不属于本项目 GPL：
 https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
 https://learn.microsoft.com/en-us/visualstudio/releases/2019/redistribution
 
-- 9288 SDK 和 A 系列 `8.BIN` / `E.BIN` 不进入源码或普通 CI 轻量包。
+Mac 全套包使用同架构原生工具链，不包含 Windows CRT DLL，也不通过 Wine 执行工具。
+
+- 所需 9288 / 9288T / 9288S SDK 和 A 系列 `8.BIN` / `E.BIN` 不进入源码或 PR 轻量测试包。
   维护者已确认获授权分发所提供的 SDK（钳工 SDK）和配套固件；全套包仅包含所需 SDK 头文件与固件，
   不包含商业 GAM、游戏 EXE、RES 或存档。该分发授权不等于将第三方组件改为 GPL。
-  全套包的 `FULL-BUNDLE.json` 记录实际依赖哈希和工具链版本。
+  默认正式发布为三平台 Full 包；CI 只从固定来源、按固定 SHA-256 校验提取授权依赖，
+  不从维护者电脑或任意游戏目录收集文件。全套包的 `FULL-BUNDLE.json` 记录实际依赖哈希和工具链版本。
+  合成 GAM 与转换产物只用于隔离验证，不加入 Full ZIP。
 - `c6502_symbols.json` 仅记录 C6502 开发包 `test.map` 中函数名/地址事实，未包含
   完整开发包、编译器二进制或 SDK 实现。
 - `runtime/c6502_native_query_assets.h` 中的小型对话框位图常量源于兼容性逆向，

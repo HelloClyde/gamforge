@@ -6,12 +6,15 @@
 ## 当前状态
 
 已加入 Apple Silicon `arm64` 与 Intel `x86_64` 的源码适配、`.app` / CLI 打包入口和
-双架构 CI。v1.5.0 起 Tag 流程会在 Windows 和两种 Mac 构建全部成功后发布轻量包；
-实际可下载版本以 Releases 为准，只有含 `full` 的资产才是依赖齐全的全套版。
+双架构 CI。当前发布策略为 **Windows 和两种 Mac 均默认 Full**：后续 tag 必须在
+三个平台的全套包构建和隔离转换全部成功后才能发布，不用轻量包代替失败的 Full 包。
+历史 v1.5.0 首次发布的是轻量包；新策略不会自动补齐历史附件。实际可下载文件
+以 Releases 为准，名称含 `full` 的资产才是依赖齐全的全套版。
 2026-10-16 的 [应用 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)
 在两个 Mac runner 上各执行 508 项测试（464 通过、44 项可选环境跳过），完成本机 helper、
 冻结 worker、ZIP 解压后签名、自检和实际 GUI 窗口检查。对应源提交为 `6610c689`。
-这不等于完整转换链已经通过；原生 S1C33 工具链和全套包转换使用下面的独立验证流程。
+该历史记录不等于完整转换链已经通过；新的默认发布还要求同架构 S1C33 工具链
+和解压后的全套包转换验证通过，每次构建保留独立的验证记录。
 
 构建目标最低系统为 macOS 11；打包器检查每个 Mach-O 的实际最低版本，若依赖要求
 更高版本则拒绝生成误标的包。CI 运行于 macOS 15，不能据此宣称所有 macOS 11+
@@ -19,22 +22,23 @@
 
 ## 使用分发包
 
-发布 Mac 资产后，按“关于本机”的芯片选择 `macos-arm64.zip`（Apple Silicon）或
-`macos-x86_64.zip`（Intel）。不要混用架构，不要求 Rosetta，也不能运行 Windows ZIP
+按“关于本机”的芯片选择 `gamforge-<版本>-full-macos-arm64.zip`（Apple Silicon）或
+`gamforge-<版本>-full-macos-x86_64.zip`（Intel）。不要混用架构，不要求 Rosetta，也不能运行 Windows ZIP
 中的工具链。完整解压后打开 `GAMForge.app`，或在终端运行 `./GAMForge-CLI --help`。
 
-轻量包自带 Python、Tk、Pillow 和本机启动 helper，但转换前还需配置：
+**Full 包不需要安装 Python、Xcode、Homebrew、SDK 或编译器，也不需要手动填写依赖路径。**
+它自带 Python、Tk、Pillow、本机启动 helper，以及：
 
 - 目标机型的 SDK 头文件：9288、9288T、9288S 分别使用对应 SDK，听说王600 共用 S SDK。
 - A 系列 `8.BIN`、`E.BIN`：使用有权使用的固件，各 2 MiB。
 - 同架构 **Mac 原生 S1C33 LLVM**：包括 `clang`、`ld.lld`、`llvm-objcopy`、`llvm-readelf`，
   必须包含本仓库固定版本的 S1C33 后端与 9288 GNU33 ABI 补丁。
 
-Apple 自带 Clang 只用于在 Mac 构建 PC helper，**不能生成 S1C33 游戏程序**。
+Apple 自带 Clang 只用于开发者在 Mac 构建 PC helper，**不能生成 S1C33 游戏程序**。
 普通 Homebrew LLVM 同样不能替代定制工具链。Windows `.exe` 不会被当作 Mac 可执行文件。
 
-授权全套版采用 `full-macos-<架构>.zip` 命名，只有此包才包含转换所需依赖；
-“有全套打包脚本”不代表完整包已经可下载。轻量与全套均不含 GAM、游戏 EXE 或 RES。
+历史轻量包和 PR 开发测试包仍缺少上述 SDK、固件及 S1C33 工具链，不能当作 Full 使用；
+当前版本是否可下载以 Releases 实际附件为准。所有包均不含 GAM、游戏 EXE、RES 或存档。
 
 包布局：
 
@@ -42,7 +46,7 @@ Apple 自带 Clang 只用于在 Mac 构建 PC helper，**不能生成 S1C33 游�
 GAMForge/
   GAMForge.app/
     Contents/MacOS/GAMForge
-    Contents/Resources/dependencies/   # 仅授权全套版
+    Contents/Resources/dependencies/   # Full 内置的授权转换依赖
   GAMForge-CLI                        # 旁置命令行启动器
   MACOS-BUNDLE.json
   MANIFEST.sha256.json
@@ -105,8 +109,9 @@ Mac 宿主不改变输出格式、游戏存档路径、默认缩放或游戏兼�
 
 ### 原生工具链
 
-重型 LLVM 构建与普通应用 CI 分开，避免每次 UI 修改都重编 LLVM。可手动运行
-**Build S1C33 toolchain**，或在对应架构 Mac 上安装 CMake、Ninja、Git 后执行：
+默认 main、常规手动构建和 tag 流程会准备本机原生工具链，按源码提交、ABI 补丁、
+构建脚本与宿主架构缓存；缓存命中后仍验证，避免每次 UI 修改都重编 LLVM。
+也可独立手动运行 **Build S1C33 toolchain**，或在对应架构 Mac 上安装 CMake、Ninja、Git 后执行：
 
 ```sh
 python scripts/build_toolchain.py --jobs 2 --reuse \
@@ -123,8 +128,9 @@ python scripts/build_toolchain.py --expect-host macos-arm64 \
   --verify-only /path/to/s1c33-9288-toolchain-macos-arm64
 ```
 
-### 轻量应用
+### 轻量应用中间产物
 
+Full 先构建轻量应用，再加入经验证的授权依赖；轻量 ZIP 本身不作为新的默认 Release 下载。
 必须在匹配 CPU 架构的 Mac/Python 上打包，不支持从 Windows 假造 `.app`：
 
 ```sh
@@ -151,7 +157,8 @@ Mach-O 架构、最低系统和 ad-hoc 签名。ZIP 保留 `.app` 的框架符�
 
 ### 授权全套版
 
-维护者需持有 SDK/固件分发授权，并提供 **本机架构工具链**。将上述已验证轻量 ZIP
+默认 CI 自动从固定来源、按固定 SHA-256 获取已获授权的 SDK/固件，并加入 **本机架构工具链**。
+下面是维护者持有相同授权和依赖时的本地组装方法：将上述已验证轻量 ZIP
 解压到独立目录，然后执行：
 
 ```sh
@@ -170,9 +177,11 @@ python scripts/build_full_bundle.py \
 或 `.exe` 放入 Mac 包。全套打包将依赖放进 `Contents/Resources/dependencies`，保留
 来源、许可与逐文件哈希，重新签名，并检查工具链不依赖 Homebrew 或开发者的私有绝对路径。
 
-发布前还须在解压后的全套包中清除开发者依赖环境变量，使用包内 CLI 实际转换自备游戏：
+发布前须在解压后的全套包中清除开发者依赖环境变量，使用包内 CLI 实际转换合成 GAM：
 覆盖四个目标、默认锐利 9288T、外置 RES、中文路径和 `.app` 移动后的启动。
-把转换产物留在包外，不能加入 Release ZIP；验证结果明确记录宿主系统、架构及未覆盖范围。
+输入由仓库脚本生成，不下载商业游戏。合成输入和转换产物均留在包外，不加入 Release ZIP；
+验证记录包含宿主系统、架构、依赖与产物哈希及未覆盖范围。维护者可另用自备且有权使用的游戏
+做更完整的功能检查，但不能把本地游戏加入发布包。
 
 ## CI 与验证边界
 
@@ -191,17 +200,20 @@ CI 仍会实际创建 Tk 窗口以检查配置，不把“能 import tkinter”�
 也不会混用另一环境的 Tcl/Tk 声明。
 
 Mac CI 执行测试、本机 helper、冻结 worker、自检，以及解压 ZIP 后的实际 GUI 窗口和图标预览
-烟雾测试；后者不运行游戏、不转换用户数据。所有三平台成功后，tag 发布阶段才收集轻量 ZIP
-及 SHA-256；SDK/固件和全套包不会自动从维护者电脑上传。
+烟雾测试；后者不运行游戏、不转换用户数据。PR 仅生成轻量开发测试包。
+main、常规手动构建和 tag 还会组装 Full，核验工具链/授权依赖，并运行上述隔离转换。
+tag 发布阶段只接受三个对应平台的 Full ZIP、SHA-256 和验证记录；缺少任一包或验证失败
+均阻止发布，不回退上传轻量包。依赖不从维护者电脑自动收集。
 
-### 全套包独立验证
+### 可选的跨工作流全套包验证
 
 手动运行已注册的 **Build**，同时填写 `app_run_id`、`toolchain_run_id` 时，
-只执行全套验证；两个值都留空则执行通常的应用构建。不能只填写一个值。
-例如在测试分支中执行（替换为实际成功的运行 ID）：
+只执行跨工作流 Mac 全套验证；两个值都留空则执行通常的三平台 Full 构建。
+此入口用于维护排查，不是默认发布前必须手工做的步骤。不能只填写一个值。
+例如在待验证分支中执行（替换分支和实际成功的运行 ID）：
 
 ```sh
-gh workflow run build.yml --ref codex/macos-support \
+gh workflow run build.yml --ref YOUR_BRANCH \
   -f app_run_id=APP_RUN_ID -f toolchain_run_id=TOOLCHAIN_RUN_ID
 ```
 

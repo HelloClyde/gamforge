@@ -34,19 +34,23 @@ Recompile BBK A-series GAM games into native BBK 9288 / 9288T / 9288S / TSW600 a
 - 默认单 EXE 内置未压缩资源，直接使用系统已载入的字节，不分配整份 GAM 副本；可选“EXE＋外置资源文件”。
 - [按游戏隔离存档](docs/game-saves.md)：`A:\系统\数据\游戏\<源 GAM 文件名>\`，与 EXE 名称和显示模式无关。
 - 两种模式均包含原生游戏代码和共享运行库，真机不需要原 GAM、BIN 或 GNA 文件。
-- 分发包自带 Python/Tk/Pillow 与 PC 启动状态生成工具，不依赖开发者的 Python 安装路径。
+- 正式分发默认提供 Windows / macOS 全套 Full 包：Python/Tk/Pillow、PC 启动状态生成工具、各机型 SDK、A 系列固件及本机原生 S1C33 工具链齐全，无需额外安装转换依赖。
 
 ## 快速开始（Windows）
 
-1. 从 [Releases](https://github.com/HelloClyde/gamforge/releases) 下载 Windows ZIP，
-   优先选择名称含 **`full-windows-x64.zip` 的全套版**，完整解压后运行 `GAMForge.exe`。
-   当前源码版本为 **v1.5.0**；可下载版本和实际资产以 Releases 为准，Tag CI 成功后才会发布。
-2. 全套版已配好所需 SDK、工具链和固件，无需安装 Python、编译器或手动填写路径。
-   不含 `full` 的轻量版仍需在“编译环境”中自行配置这些依赖。
+1. 从 [Releases](https://github.com/HelloClyde/gamforge/releases) 下载
+   **`gamforge-<版本>-full-windows-x64.zip`**，完整解压后运行 `GAMForge.exe`。
+2. Full 包已配好所需 SDK、工具链、固件和 Windows 工具链运行库，
+   无需安装 Python、编译器或手动填写依赖路径。
 3. 选择自己有权使用的 GAM，设置名称、图标和输出位置，点击转换。
 4. 将生成的 EXE 复制到真机 `A:\系统\程序\`，在“娱乐”分类启动（听说王600 为“游戏”）。
 
-全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和轻量版不含它们。
+**发布策略已改为三平台默认 Full**：后续 tag 只有在 Windows、Apple Silicon Mac、Intel Mac
+全套包均通过隔离转换检查后才发布，不以轻量包代替失败的 Full 包。
+这不追溯改变历史附件：v1.5.0 首次发布的是轻量包，v1.4.0 有 Windows Full；
+实际可下载文件仍以 Releases 附件为准，名称不含 `full` 的历史包需要自行配置依赖。
+
+全套版包含经维护者确认获授权分发的所需 SDK 头文件和固件；源码仓库和 PR 轻量测试包不含它们。
 请保留包内 `dependencies`、`_internal` 目录，不要只复制单个 EXE。支持 Windows 10/11 x64。
 9288 / 9288T 分别使用对应 SDK；9288S / 听说王600 的当前后端共用 **9288S SDK**。
 这不代表所有机型的 SDK 可以互换，尤其不能使用 9588 SDK 或 9288T 头文件编译 S / 600。
@@ -61,18 +65,21 @@ v1.3.0 起全套包包含四个输出目标所需依赖；v1.2.0 支持 9288 / 9
 ### macOS（v1.5.0 新增）
 
 新增 Apple Silicon（`arm64`）和 Intel（`x86_64`）两套原生构建，均提供
-`GAMForge.app` 和 `GAMForge-CLI`，不依赖 Wine。Tag 流程等待两种架构构建成功后
-发布 Mac 轻量包；全套依赖请认准名称中的 `full`，以 Releases 实际资产为准。
-不要把 Windows ZIP 改名为 Mac 版。
+`GAMForge.app` 和 `GAMForge-CLI`，不依赖 Wine。默认下载
+`gamforge-<版本>-full-macos-arm64.zip` 或 `gamforge-<版本>-full-macos-x86_64.zip`，
+解压即可转换，不需要安装 Python、Xcode、Homebrew 或另配 SDK/工具链。
+请按“关于本机”的芯片选择架构，不要把 Windows ZIP 改名为 Mac 版。
 
 两种 Mac 的原生应用构建、冻结 worker、解压后 GUI 和签名检查已通过
 [测试分支 CI](https://github.com/HelloClyde/gamforge/actions/runs/38846423429)。
-原生工具链及全套包的独立转换验证另行进行；轻量应用通过不等于完整转换链已验证。
+该记录只证明轻量应用通过，不代表历史 Full 已发布；新的发布流程还要求同架构原生工具链
+和全套包隔离转换检查通过，具体以每次 Release 的构建记录为准。
 
-Mac 构建与源码运行方法见 [macOS 使用与打包](docs/macos.md)。轻量包包含
-Python/Tk/Pillow 和本机启动 helper；转换还需对应 SDK、A 系列固件，以及
-**Mac 原生的定制 S1C33 工具链**，不能使用 Windows `.exe` 或 Apple 自带 Clang 替代。
-提供授权全套打包入口，但全套 Mac ZIP 必须在对应架构 Mac 上实际构建、转换验证后才发布。
+Mac 构建与源码运行方法见 [macOS 使用与打包](docs/macos.md)。Full 包包含
+Python/Tk/Pillow、本机启动 helper、对应 SDK、A 系列固件，以及
+**Mac 原生的定制 S1C33 工具链**；不能使用 Windows `.exe` 或 Apple 自带 Clang 替代。
+Mac ZIP 必须在对应架构 Mac 上实际构建、转换验证后才发布。当前使用 ad-hoc 签名，
+未经 Apple 公证，首次打开可能需要按系统提示仅允许此应用运行；不需要关闭系统安全保护。
 Mac 配置与工作目录位于 `~/Library/Application Support/GAMForge/`，不会写入 `.app`。
 
 ### EXE＋外置资源文件（v1.1.0 新增）
@@ -217,14 +224,17 @@ docs/                架构、兼容性、发布和维护说明
 
 ## CI 与发布
 
-- push 到 `main`、PR 或手动触发 **Build**：测试、代码检查，分别构建 Windows x64、macOS arm64 / x86_64 轻量分发包和 SHA-256 校验文件。
+- push 到 `main`、常规手动触发 **Build**：测试、代码检查，构建 Windows x64、macOS arm64 / x86_64 Full 包与 SHA-256 校验文件；PR 仅生成开发用轻量测试包，不发布 Release。
 - Mac job 在对应架构 Mac runner 上测试本机 helper、Tk 窗口、冻结 worker 和解压后的 GUI；没有 Mac 上的成功日志不能称为构建通过。
-- 推送 `v*` tag：三个平台的同一套检查与构建全部通过后自动创建 GitHub Release 并上传 ZIP、校验文件。
+- Full 构建从固定版本的授权来源获取 SDK/固件，并构建或复用经过验证的本机 S1C33 工具链；Windows 同时携带 app-local VC 运行库。
+- 三平台分别清除开发者依赖配置，使用解压后的 Full 包执行四机型合成 GAM 转换，再验证中文路径搬迁及外置 RES；不将合成输入或生成的游戏产物装入分发包。
+- 推送 `v*` tag：三个平台的检查、Full 构建和隔离转换全部通过后，才创建 GitHub Release，上传 Full ZIP、校验文件与验证记录；任一平台失败均不回退发布轻量包。
 - release 使用严格的 tag/版本一致性检查；普通 PR 没有发布权限。
-- LLVM 工具链使用独立的手动构建 workflow，固定源代码提交并应用仓库中的 ABI 补丁。
+- LLVM 工具链固定源代码提交并应用仓库中的 ABI 补丁，缓存由源码、补丁、构建脚本和宿主架构共同限定；独立手动工具链和跨工作流 Mac Full 验证仍可用于维护排查，不是默认发布的前置手工步骤。
 
-Windows 本地构建：`python scripts/build_windows.py`；Mac 使用 `python scripts/build_macos.py`，
-必须在对应架构宿主执行。默认 CI 不打包 SDK/固件，授权全套版需单独组装与隔离转换验证。
+Windows 本地轻量应用构建：`python scripts/build_windows.py`；Mac 使用 `python scripts/build_macos.py`，
+必须在对应架构宿主执行。它们是 Full 的中间产物，不是默认正式下载包；
+全套组装使用 `scripts/build_full_bundle.py` 并执行隔离转换验证。
 发布约定详见 [发布流程](docs/releasing.md)及 [Mac 发布检查](docs/macos.md#维护者打包)。
 
 ## 兼容性与原理

@@ -295,3 +295,43 @@ def test_original_synthetic_game_is_deterministic_and_statically_resolvable(vali
     assert report["unresolved_direct_call_sites"] == 0
     assert report["unresolved_far_call_sites"] == 0
     assert report["indirect_jumps"] == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GAMForge/CON",
+        "GAMForge/NUL.txt",
+        "GAMForge/LPT9.log",
+        "GAMForge/trailing.",
+        "GAMForge/trailing ",
+        "GAMForge/a?b",
+        "GAMForge/./alias",
+        "GAMForge//alias",
+    ],
+)
+def test_windows_extraction_rejects_path_aliases_and_devices(validator, name):
+    with zipfile.ZipFile(io.BytesIO(zip_bytes([(name, None)]))) as archive:
+        with pytest.raises(ValueError, match="Unsafe"):
+            validator.safe_members(archive, "GAMForge", windows=True)
+
+
+def test_windows_rejects_even_internal_links_and_case_aliases(validator):
+    data = zip_bytes([("GAMForge/link", "target")])
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with pytest.raises(ValueError, match="links are not allowed"):
+            validator.safe_members(archive, "GAMForge", windows=True)
+    data = zip_bytes([("GAMForge/FILE", None), ("GAMForge/file", None)])
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with pytest.raises(ValueError, match="Duplicate"):
+            validator.safe_members(archive, "GAMForge", windows=True)
+
+
+def test_windows_verified_extraction_needs_no_ditto(validator, tmp_path):
+    archive = tmp_path / "app.zip"
+    archive.write_bytes(zip_bytes([("GAMForge/sub/data", None)]))
+    archive.with_suffix(".zip.sha256").write_text(
+        f"{validator.digest(archive)}  {archive.name}\n", encoding="ascii"
+    )
+    root = validator.extract_verified(archive, tmp_path / "new", "GAMForge", windows=True)
+    assert (root / "sub/data").read_bytes() == b"fixture"

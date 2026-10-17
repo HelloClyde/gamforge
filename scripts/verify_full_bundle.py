@@ -112,7 +112,7 @@ def check_runs(args):
     print(json.dumps(result, indent=2))
 
 
-def safe_members(archive, root):
+def safe_members(archive, root, *, windows=False):
     """Validate confinement before ditto can materialize .app symlinks."""
     seen = set()
     for entry in archive.infolist():
@@ -123,13 +123,29 @@ def safe_members(archive, root):
             and path.parts
             and path.parts[0] == root
             and "\\" not in entry.filename
-            and ":" not in entry.filename,
+            and ":" not in entry.filename
+            and path.as_posix() == entry.filename.rstrip("/"),
             f"Unsafe ZIP member: {entry.filename}",
         )
         key = entry.filename.rstrip("/")
+        if windows:
+            reserved = {"CON", "PRN", "AUX", "NUL"} | {
+                f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+            }
+            require(
+                all(
+                    part == part.rstrip(" .")
+                    and part.split(".")[0].upper() not in reserved
+                    and not any(ord(c) < 32 or c in '<>"|?*' for c in part)
+                    for part in path.parts
+                ),
+                f"Unsafe Windows ZIP member: {entry.filename}",
+            )
+            key = key.casefold()
         require(key not in seen, f"Duplicate ZIP member: {key}")
         seen.add(key)
         if stat.S_ISLNK(entry.external_attr >> 16):
+            require(not windows, f"Windows ZIP links are not allowed: {entry.filename}")
             target = archive.read(entry).decode("utf-8")
             resolved = posixpath.normpath(posixpath.join(str(path.parent), target))
             require(
@@ -140,14 +156,19 @@ def safe_members(archive, root):
             )
 
 
-def extract_verified(archive, destination, root):
+def extract_verified(archive, destination, root, *, windows=False):
     fields = archive.with_suffix(".zip.sha256").read_text(encoding="ascii").split()
     require(len(fields) == 2 and fields[1].lstrip("*") == archive.name, "Bad ZIP checksum name")
     require(digest(archive) == fields[0], "ZIP checksum mismatch")
     with zipfile.ZipFile(archive) as zipped:
-        safe_members(zipped, root)
+        safe_members(zipped, root, windows=windows)
     require(not destination.exists(), "Extraction destination must be new")
-    subprocess.run(["ditto", "-x", "-k", str(archive), str(destination)], check=True)
+    if windows:
+        # Paths, case aliases and every link have been rejected before writing.
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(destination)
+    else:
+        subprocess.run(["ditto", "-x", "-k", str(archive), str(destination)], check=True)
     return destination / root
 
 
