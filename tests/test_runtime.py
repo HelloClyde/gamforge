@@ -835,10 +835,10 @@ int main(void){
             self.skipTest("host gcc is not installed")
         runtime = (DATA / "runtime/c6502_native_runtime.c").read_text(encoding="utf-8")
         helper = (
-            "static void api_graphics"
-            + runtime.split("static void api_graphics", 1)[1].split("static void native_strcmp", 1)[
-                0
-            ]
+            "static void native_chinese"
+            + runtime.split("static void native_chinese", 1)[1].split(
+                "static void native_strcmp", 1
+            )[0]
         )
         ids = sorted(set(re.findall(r"C6502_BRIDGE_\w+", helper)))
         source = (

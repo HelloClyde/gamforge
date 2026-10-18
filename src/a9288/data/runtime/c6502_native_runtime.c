@@ -41,10 +41,13 @@
 
 #ifndef C6502_EXTERNAL_RESOURCES
 extern c6502_u8 c6502_game_image_start[];
-extern c6502_u8 c6502_game_image_end[];
+/* S1C33 gives undecorated external arrays a four-byte alignment. The
+   linker end label is byte-exact; otherwise odd GAM lengths fold the
+   size guard to false and the linker discards the entire game image. */
+extern c6502_u8 c6502_game_image_end[] __attribute__((aligned(1)));
 #endif
 extern const c6502_u8 c6502_boot_snapshot_start[];
-extern const c6502_u8 c6502_boot_snapshot_end[];
+extern const c6502_u8 c6502_boot_snapshot_end[] __attribute__((aligned(1)));
 extern const c6502_u16 c6502_dispatch_bank_starts[];
 extern const c6502_u16 c6502_dispatch_bank_starts_end[];
 extern const c6502_u16 c6502_dispatch_offsets[];
@@ -184,6 +187,7 @@ static c6502_u32 native_graphics_phase(c6502_u32 id)
     if (id == C6502_BRIDGE_c6502_adapter_syspicture ||
         id == C6502_BRIDGE_c6502_adapter_syspicturedummy) return NT_PICTURE;
     if (id == C6502_BRIDGE_c6502_adapter_sysascii ||
+        id == C6502_BRIDGE_c6502_adapter_syschinese ||
         id == C6502_BRIDGE_c6502_adapter_sysprintstring) return NT_TEXT;
     if (id == C6502_BRIDGE_c6502_adapter_syssavescreen ||
         id == C6502_BRIDGE_c6502_adapter_sysrestorescreen) return NT_SURFACE;
@@ -2460,6 +2464,17 @@ static void query_box(c6502_u32 *r)
 
 #include "c6502_native_menu.h"
 
+static void native_chinese(c6502_u32 *r)
+{
+    /* FAR SysChinese(U8 x, U8 y, U16 code): A holds x; the stack
+       holds y, code-low, code-high. E.BIN bank 5 $5c57 accepts only
+       a whole 16x16 cell; a numeric GB code is high-byte first. */
+    c6502_u8 x = (c6502_u8)r[4], y = stack8(r, 0u), text[3];
+    if (x > 144u || y > 80u) return;
+    text[0] = stack8(r, 2u); text[1] = stack8(r, 1u); text[2] = 0u;
+    native_text(x, y, text);
+}
+
 static void api_graphics(c6502_u32 *r, c6502_u32 id)
 {
     /* C6502's FAR ABI leaves a leading U8 argument in A.  The remaining
@@ -2477,6 +2492,8 @@ static void api_graphics(c6502_u32 *r, c6502_u32 id)
         c6502_u8 text[2];
         text[0] = stack8(r, 1u); text[1] = 0u;
         native_text(x0, y0, text);
+    } else if (id == C6502_BRIDGE_c6502_adapter_syschinese) {
+        native_chinese(r);
     } else if (id == C6502_BRIDGE_c6502_adapter_sysprintstring) {
         c6502_u32 length = 0u;
         pointer = stack16(r, 1u);
@@ -2860,6 +2877,21 @@ static c6502_u32 signed_div(c6502_u32 left, c6502_u32 right)
     return negative ? 0u - left : left;
 }
 
+#ifdef C6502_NEEDS_c6502_runtime_mod_int
+static c6502_u16 signed_mod16(c6502_u16 left, c6502_u16 right)
+{
+    /* __mod_int ($d5dc) uses the dividend's sign. Unsigned magnitudes
+       also define -32768 % -1 without overflowing a signed 16-bit int. */
+    c6502_u16 magnitude_left = (left & 0x8000u) ?
+        (c6502_u16)(0u - left) : left;
+    c6502_u16 magnitude_right = (right & 0x8000u) ?
+        (c6502_u16)(0u - right) : right;
+    c6502_u16 remainder = magnitude_right ?
+        (c6502_u16)(magnitude_left % magnitude_right) : 0u;
+    return (left & 0x8000u) ? (c6502_u16)(0u - remainder) : remainder;
+}
+#endif
+
 static c6502_u32 float_multiply_bits(c6502_u32 left, c6502_u32 right)
 {
     c6502_u32 sign = (left ^ right) & 0x80000000u;
@@ -3195,6 +3227,10 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
     case C6502_BRIDGE_c6502_runtime_uns_mod_int:
         left16 = get16(0x20u); right16 = get16(0x23u);
         return16(r, right16 ? (c6502_u16)(left16 % right16) : 0u); return;
+#ifdef C6502_NEEDS_c6502_runtime_mod_int
+    case C6502_BRIDGE_c6502_runtime_mod_int:
+        return16(r, signed_mod16(get16(0x20u), get16(0x23u))); return;
+#endif
 #ifdef C6502_NEEDS_c6502_runtime_div_int
     case C6502_BRIDGE_c6502_runtime_div_int:
         left16 = get16(0x20u); right16 = get16(0x23u);
@@ -3485,6 +3521,7 @@ void c6502_native_bridge(c6502_u32 *r, c6502_u32 id)
         nt_leave(NT_SHAPE, result, native_clock()); return;
 #endif
     case C6502_BRIDGE_c6502_adapter_sysascii:
+    case C6502_BRIDGE_c6502_adapter_syschinese:
     case C6502_BRIDGE_c6502_adapter_sysprintstring:
     case C6502_BRIDGE_c6502_adapter_syspicture:
     case C6502_BRIDGE_c6502_adapter_sysline:
@@ -3698,14 +3735,15 @@ int c6502_native_prepare(void)
 #ifdef C6502_EXTERNAL_RESOURCES
     if (!nr_open()) { nr_close(); return 0; }
 #else
-    if ((c6502_u32)(c6502_game_image_end - c6502_game_image_start) != C6502_GAME_SIZE)
+    if ((c6502_u32)c6502_game_image_end -
+            (c6502_u32)c6502_game_image_start != C6502_GAME_SIZE)
         return 0;
     /* The OS has already loaded these writable .data bytes. Do not allocate
        or copy the entire GAM again. One App_Main session per loader image;
        resource writes are private to this loaded image, not the EXE file. */
     c6502_native_state.game = c6502_game_image_start;
 #endif
-    if ((c6502_u32)(c6502_boot_snapshot_end - c6502_boot_snapshot_start) !=
+    if ((c6502_u32)c6502_boot_snapshot_end - (c6502_u32)c6502_boot_snapshot_start !=
             C6502_BOOT_RAW_SIZE) {
         c6502_native_release();
         return 0;
