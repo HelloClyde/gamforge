@@ -122,6 +122,9 @@ jobs:
     name: Native toolchains for full packages
     needs: test
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/toolchain.yml
 
   macos:
