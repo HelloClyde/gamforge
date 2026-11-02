@@ -64,9 +64,14 @@ volatile c6502_u32 c6502_missing_bridge_ids[64];
 c6502_u32 c6502_entry_regs[15];
 C6502_NativeState c6502_native_state;
 c6502_u32 c6502_host_dp;
-#ifdef C6502_TARGET_9288T
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288_GUI)
 volatile c6502_u32 c6502_native_host_stop_requested;
 c6502_u32 c6502_native_entry_sp;
+#endif
+#ifdef C6502_TARGET_9288_GUI
+c6502_u8 c6502_native_9288_quit_received;
+#endif
+#ifdef C6502_TARGET_9288T
 c6502_u8 c6502_native_t_quit_received;
 #endif
 volatile c6502_u32 c6502_validation_trace_count;
@@ -1196,6 +1201,71 @@ static void write_psr(c6502_u32 value)
 #include "c6502_native_matrix.h"
 #include "c6502_native_exit.h"
 #include "c6502_native_clock.h"
+#ifdef C6502_TARGET_9288_GUI
+#include "c6502_native_9288_host.h"
+static c6502_u8 c6502_9288_gui_pumping;
+static c6502_u32 c6502_9288_gui_last_pump, c6502_9288_gui_batches;
+static c6502_u32 c6502_9288_gui_messages, c6502_9288_gui_keys;
+
+int c6502_native_9288_host_begin(void)
+{
+    Native9288ResetIdle reset = 0;
+    c6502_u32 address = ((const c6502_u32 *)tpDL_GUITable)[
+        C6502_9288_IDLE_GUI_OFFSET / sizeof(c6502_u32)];
+    c6502_native_host_stop_requested = c6502_native_9288_quit_received = 0u;
+    c6502_9288_gui_pumping = 0u;
+    c6502_9288_gui_batches = c6502_9288_gui_messages = c6502_9288_gui_keys = 0u;
+    c6502_9288_gui_last_pump = native_clock();
+    if (address >= 0x02000000u && address <= 0x026ffff6u && !(address & 1u) &&
+        native_9288_idle_body((const c6502_u8 *)address))
+        reset = (Native9288ResetIdle)address;
+    return native_9288_host_start(reset, c6502_9288_gui_last_pump);
+}
+
+void c6502_native_9288_host_end(void)
+{
+    native_9288_host_stop();
+}
+
+static void native_9288_pump(c6502_u32 now)
+{
+    T_GUI_HWND window = c6502_native_state.window;
+    T_GUI_Msg message;
+    c6502_u32 pending = 16u;
+    if (!window || !c6502_9288_host.active || c6502_9288_gui_pumping ||
+        c6502_native_host_stop_requested || c6502_native_9288_quit_received) return;
+    if (now - c6502_9288_gui_last_pump < C6502_9288_PUMP_TICKS &&
+        !fnGUI_HavePendingMessage(window)) return;
+    c6502_9288_gui_pumping = 1u;
+    /* Official 9288 games enter GetMessage, TranslateMessage and
+       DispatchMessage. HavePendingMessage alone does not run IAL.
+       Timer #2 bounds an idle receive; it NEVER drives guest time.
+       The callback leaves system keys with DefaultMainWinProc. Game keys
+       still have exactly ONE source: the existing matrix/FIFO below. */
+    do {
+        if (!fnGUI_GetMessage(&message, window)) {
+            c6502_native_9288_quit_received = 1u;
+            c6502_native_host_stop_requested = 1u;
+            break;
+        }
+        ++c6502_9288_gui_messages;
+        if (native_is_key_message(message.message)) ++c6502_9288_gui_keys;
+        fnGUI_TranslateMessage(&message);
+        fnGUI_DispatchMessage(&message);
+    } while (--pending && !c6502_native_host_stop_requested && fnGUI_HavePendingMessage(window));
+    /* GUI/DC handling may submit a white host surface even without a
+       new game frame. Reconcile the direct LCD before resuming the game,
+       rather than leaving it blank until a later input/render audit. */
+    if (c6502_output_ready && !c6502_native_host_stop_requested)
+        c6502_native_present();
+    /* Pace from completion: the repair itself must not make the next
+       message batch immediately overdue on slower hardware. */
+    c6502_9288_gui_last_pump = native_clock();
+    native_9288_host_pulse(c6502_9288_gui_last_pump);
+    ++c6502_9288_gui_batches;
+    c6502_9288_gui_pumping = 0u;
+}
+#endif
 #ifdef C6502_TARGET_9288T
 #include "c6502_native_9288t_host.h"
 
@@ -1335,6 +1405,14 @@ static void native_capture_keys(void)
     if (c6502_key_initialized &&
         *hardware_byte(C6502_CTM_DIVIDER_ADDRESS) == (c6502_u8)c6502_key_scan_tick) return;
     now = native_clock();
+#ifdef C6502_TARGET_9288_GUI
+    /* Host calls must run BEFORE, never inside, the IRQ-masked matrix
+       transaction. Keep system standby/power handling alive during play. */
+    native_9288_host_pulse(now);
+    native_9288_pump(now);
+    if (c6502_native_host_stop_requested) return;
+    now = native_clock();
+#endif
 #ifdef C6502_TARGET_9288T
     /* Foreground keepalive, including idle animations/no key presses.
        This host call is OUTSIDE the matrix IRQ-masked transaction. */
@@ -1473,11 +1551,10 @@ static c6502_u8 native_window_key(int wait)
 {
     c6502_u32 started = native_clock();
     c6502_u8 result;
-    /* Gameplay owns its FIFO: T GUI edges / other targets' matrix snapshot,
-       exactly one
-       consumption per query. Never inspect, translate, dispatch or wait on
-       original 9288 GUI messages here (T's capture path pumps its host).
-       The guest GuiGetMsg wait loop uses this same nonblocking primitive;
+    /* Gameplay owns one FIFO: T GUI edges / other targets' matrix snapshot,
+       exactly one consumption per query. capture_keys services host system
+       messages separately; those messages are never a second 9288 game-key
+       source. The guest GuiGetMsg wait loop uses this same primitive;
        its Timer events come from native_update_timer's hardware clock. */
     native_capture_keys();
     result = native_take_key();
@@ -1664,7 +1741,7 @@ static void api_get_message(c6502_u32 *r)
     for (;;) {
         native_update_timer();
         native_capture_keys();
-#ifdef C6502_TARGET_9288T
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288_GUI)
         if (c6502_native_host_stop_requested) { return8(r, 0u); return; }
 #endif
         native_refresh_if_due();
@@ -2307,7 +2384,7 @@ static void query_box_run(c6502_u32 *r, c6502_u8 selection,
     c6502_native_present();
     for (;;) {
         c6502_u8 type, key = native_window_key(1);
-#ifdef C6502_TARGET_9288T
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288_GUI)
         if (c6502_native_host_stop_requested) { result = 0xffu; break; }
 #endif
         native_update_timer();
@@ -2431,7 +2508,7 @@ static void message_box(c6502_u32 *r, c6502_u16 text, c6502_u16 timeout)
     wait_started = native_clock();
     for (;;) {
         c6502_u8 key = native_window_key(1);
-#ifdef C6502_TARGET_9288T
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288_GUI)
         if (c6502_native_host_stop_requested) break;
 #endif
         native_update_timer();
@@ -3995,6 +4072,8 @@ void c6502_native_perf_end(void)
 #endif
 #elif defined(C6502_TARGET_9288T)
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=T-KEYMAP-1\nclock_hz=256\n";
+#elif defined(C6502_TARGET_9288_GUI)
+    static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=9288-HOST-1\nclock_hz=256\n";
 #else
     static const char header[] = "[A9288 NATIVE PERF 5]\nbuild=CLOCK-GUARD-1\nclock_hz=256\n";
 #endif
@@ -4014,6 +4093,18 @@ void c6502_native_perf_end(void)
     (void)fs_fwrite(C6502_SAVE_DIRECTORY, 1, sizeof(C6502_SAVE_DIRECTORY) - 1u, file);
     (void)fs_fwrite("\n", 1, 1, file);
     native_log_value(file, "save_catalog_enabled", c6502_files_initialized);
+#ifdef C6502_TARGET_9288_GUI
+    native_log_value(file, "host_api_verified", c6502_9288_host.verified);
+    native_log_value(file, "host_keepalive_calls", c6502_9288_host.resets);
+    native_log_value(file, "host_keepalive_max_gap_ticks", c6502_9288_host.max_gap);
+    native_log_value(file, "host_active_end", c6502_9288_host.active);
+    native_log_value(file, "host_gui_pump_batches", c6502_9288_gui_batches);
+    native_log_value(file, "host_gui_messages", c6502_9288_gui_messages);
+    native_log_value(file, "host_gui_key_messages", c6502_9288_gui_keys);
+    native_log_value(file, "host_gui_quit_received", c6502_native_9288_quit_received);
+    native_log_value(file, "host_gui_stop_requested", c6502_native_host_stop_requested);
+    native_log_value(file, "game_input_matrix", 1u);
+#endif
 #ifdef C6502_TARGET_9288T
     native_log_value(file, "t_host_api_verified", c6502_t_host.verified);
     native_log_value(file, "t_host_keepalive_calls", c6502_t_host.resets);

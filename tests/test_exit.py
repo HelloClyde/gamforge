@@ -164,14 +164,21 @@ int main(void){
 
 def test_exit_order_and_launcher_filter_are_kept():
     app = (DATA / "runtime/c6502_native_9288.c").read_text(encoding="utf-8")
-    # S collects touch; T collects GUI keyboard input. Original 9288 keeps
-    # its private-polling lifecycle and no gameplay GUI timer.
-    app = re.sub(r"#ifdef C6502_TARGET_9288S\n.*?#endif\n", "", app, flags=re.S)
-    app = re.sub(r"#ifdef C6502_TARGET_9288T\n.*?#endif\n", "", app, flags=re.S)
+    # Timer #2 now bounds the original 9288 host message pump too; it must
+    # not replace the separate Timer #1 release/launcher handoff protocol.
     exit_path = app.split("c6502_native_enter(c6502_entry_regs);", 1)[1]
-    assert "fnGUI_SetTimer" not in app.split("c6502_native_enter(c6502_entry_regs);", 1)[0]
-    assert exit_path.index("fnGUI_SetTimer") < exit_path.index("c6502_native_finish_input();")
-    assert exit_path.index("c6502_native_finish_input();") < exit_path.index("fnGUI_KillTimer")
+    before = app.split("c6502_native_enter(c6502_entry_regs);", 1)[0]
+    assert "fnGUI_SetTimer(window, 2, 1)" in before
+    assert exit_path.index("c6502_native_9288_host_end();") < exit_path.index(
+        "c6502_native_perf_end();"
+    )
+    release = exit_path.split("finish_input:", 1)[1]
+    assert release.index("fnGUI_SetTimer(window, 1, 1)") < release.index(
+        "c6502_native_finish_input();"
+    )
+    assert release.index("c6502_native_finish_input();") < release.index(
+        "fnGUI_KillTimer(window, 1)"
+    )
     assert exit_path.index("c6502_native_finish_input();") < exit_path.index("fnGUI_SetFocus")
     assert "fnGUI_TranslateMessage" not in exit_path
     assert "fnGUI_DispatchMessage" not in exit_path

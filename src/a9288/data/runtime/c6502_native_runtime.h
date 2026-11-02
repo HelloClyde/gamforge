@@ -40,10 +40,17 @@ void c6502_native_invalidate_screen(void);
 void c6502_native_perf_begin(void);
 void c6502_native_perf_end(void);
 void c6502_native_finish_input(void);
+#if defined(C6502_TARGET_9288T) || defined(C6502_TARGET_9288_GUI)
+extern volatile c6502_u32 c6502_native_host_stop_requested;
+#endif
+#ifdef C6502_TARGET_9288_GUI
+int c6502_native_9288_host_begin(void);
+void c6502_native_9288_host_end(void);
+extern c6502_u8 c6502_native_9288_quit_received;
+#endif
 #ifdef C6502_TARGET_9288T
 int c6502_native_t_host_begin(void);
 void c6502_native_t_host_end(void);
-extern volatile c6502_u32 c6502_native_host_stop_requested;
 extern c6502_u8 c6502_native_t_quit_received;
 void c6502_native_t_input_reset(void);
 int c6502_native_t_key_message(T_WORD message, T_GUI_WPARAM key, T_GUI_LPARAM flags);

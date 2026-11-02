@@ -639,7 +639,7 @@ def main() -> None:
         args.external_resources,
         args.crash_trace,
         entry_offset=inspect_game(args.game)["entry"] - 0x5000,
-        host_gui_input=args.target == "9288t",
+        host_gui_input=args.target in ("9288", "9288t"),
     )
     print("[GAM9288_STAGE] runtime|编译公共运行库与程序元数据", flush=True)
 
@@ -678,6 +678,8 @@ def main() -> None:
             flags.append("-DC6502_T_FILTER_LINEAR=1")
         if scale == "1.5x-sharp":
             flags.append("-DC6502_T_FILTER_SHARP=1")
+    elif args.target == "9288":
+        flags.append("-DC6502_TARGET_9288_GUI=1")
     elif args.target in TOUCH_TARGETS:
         flags.append("-DC6502_TARGET_9288S=1")
     if args.profile_other:
