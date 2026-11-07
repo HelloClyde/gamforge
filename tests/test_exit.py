@@ -100,7 +100,8 @@ enum {MSG_FIRSTKEYMSG=0x10,MSG_LASTKEYMSG=0x1f,MSG_KEYDOWN=0x10,MSG_KEYUP=0x12,M
 static struct {unsigned window;} c6502_native_state={123};
 static unsigned c6502_key_scan_tick,dispatches,last_message_tick,scenario;
 static unsigned char c6502_key_previous[8],c6502_input_active=1,
- c6502_key_head=3,c6502_key_count=2,c6502_timer_key_deferred=1;
+ c6502_key_head=3,c6502_key_count=2,c6502_timer_key_deferred=1,c6502_input_finishing;
+static unsigned native_clock(void){return c6502_key_scan_tick;}
 #define C6502_ACTION_RELEASE_TICKS 4u
 static void native_capture_keys(void){++c6502_key_scan_tick;assert(c6502_input_active);
  assert(c6502_key_scan_tick<100);
@@ -123,8 +124,9 @@ int main(void){for(scenario=0;scenario<5;++scenario){
  c6502_key_scan_tick=dispatches=last_message_tick=0;c6502_input_active=1;
  c6502_key_head=3;c6502_key_count=2;c6502_timer_key_deferred=1;
  c6502_native_finish_input();
- assert(c6502_key_scan_tick==(scenario==3?20:(scenario==1 || scenario==2)?71:62));
+ assert(c6502_key_scan_tick==(scenario==3?20:(scenario==1 || scenario==2)?71:63));
  assert(!c6502_input_active && !c6502_key_count && !c6502_key_head && !c6502_timer_key_deferred);
+ assert(!c6502_input_finishing);
  }return 0;}
 """,
     )

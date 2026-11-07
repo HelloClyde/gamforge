@@ -257,6 +257,7 @@ static c6502_u8 guest_read(c6502_u16 address);
 static void guest_write(c6502_u16 address, c6502_u8 value);
 static void native_lcd_write(c6502_u16 address);
 static void native_capture_keys(void);
+static void native_refresh_if_due(void);
 static void set_nz(c6502_u32 *r, c6502_u8 value);
 
 /* $28/$29 are the C6502 compiler's software-stack pointer.  Direct native
@@ -1043,7 +1044,7 @@ void c6502_native_present(void)
     c6502_output_ready = 1u;
     c6502_perf.dirty_rows += changed;
     ++c6502_perf.submissions;
-#ifdef C6502_HOST_PACKED_1X
+#if defined(C6502_HOST_PACKED_1X) || defined(C6502_TARGET_9288_GUI)
     {
         c6502_u32 finished = native_clock();
         c6502_perf.present_ticks += finished - started;
@@ -1198,6 +1199,9 @@ static void write_psr(c6502_u32 value)
 }
 
 #include "c6502_native_input.h"
+#ifndef C6502_TARGET_9288T
+static c6502_u8 c6502_input_finishing;
+#endif
 #include "c6502_native_matrix.h"
 #include "c6502_native_exit.h"
 #include "c6502_native_clock.h"
@@ -1253,11 +1257,16 @@ static void native_9288_pump(c6502_u32 now)
         fnGUI_TranslateMessage(&message);
         fnGUI_DispatchMessage(&message);
     } while (--pending && !c6502_native_host_stop_requested && fnGUI_HavePendingMessage(window));
-    /* GUI/DC handling may submit a white host surface even without a
-       new game frame. Reconcile the direct LCD before resuming the game,
-       rather than leaving it blank until a later input/render audit. */
-    if (c6502_output_ready && !c6502_native_host_stop_requested)
-        c6502_native_present();
+    /* Guest LCD writes are mirrored immediately. A normal timer/key batch
+       has no deferred pixels to flush. Paint invalidation still reconciles
+       here immediately; the same bounded audit catches unsolicited host/DC
+       overwrites even in games that do not call SysGetKey. */
+    if (c6502_output_ready && !c6502_native_host_stop_requested) {
+        /* The initial host batch can leave window chrome in the margins
+           before the first periodic audit, despite a correct game view. */
+        if (!c6502_9288_gui_batches) c6502_native_present();
+        else native_refresh_if_due();
+    }
     /* Pace from completion: the repair itself must not make the next
        message batch immediately overdue on slower hardware. */
     c6502_9288_gui_last_pump = native_clock();
@@ -1410,7 +1419,8 @@ static void native_capture_keys(void)
        transaction. Keep system standby/power handling alive during play. */
     native_9288_host_pulse(now);
     native_9288_pump(now);
-    if (c6502_native_host_stop_requested) return;
+    /* Keep observing physical release while handing control back to the host. */
+    if (c6502_native_host_stop_requested && !c6502_input_finishing) return;
     now = native_clock();
 #endif
 #ifdef C6502_TARGET_9288T
@@ -1506,6 +1516,7 @@ void c6502_native_finish_input(void)
     c6502_u32 released_at = 0u;
     c6502_u32 quiet_timers = 0u;
     c6502_u8 releasing = 0u;
+    c6502_input_finishing = 1u;
     /* May also run after acknowledging a host resource-error dialog. */
     c6502_input_active = 1u;
     /* Physical release alone is not a firmware-input barrier. Keep focus
@@ -1516,7 +1527,7 @@ void c6502_native_finish_input(void)
         c6502_u32 row, down = 0u, pending = 32u, now;
         T_GUI_Msg message;
         native_capture_keys();
-        now = c6502_key_scan_tick;
+        now = native_clock();
         for (row = 0u; row < 8u; ++row) down |= c6502_key_previous[row];
         if (down) { releasing = 0u; quiet_timers = 0u; }
         else if (!releasing) {
@@ -1529,7 +1540,10 @@ void c6502_native_finish_input(void)
         do {
             if (!fnGUI_GetMessage(&message, window)) goto finished;
             if (native_is_key_message(message.message)) {
-                released_at = now; quiet_timers = 0u;
+                /* A fresh key needs another physical/GUI release snapshot.
+                   The current drained batch may span the quiet interval. */
+                releasing = 0u;
+                released_at = native_clock(); quiet_timers = 0u;
             } else if (releasing && message.hWnd == window &&
                 message.message == MSG_TIMER && message.wParam == 1u) {
                 if (quiet_timers < 2u) ++quiet_timers;
@@ -1538,10 +1552,12 @@ void c6502_native_finish_input(void)
         } while (--pending && fnGUI_HavePendingMessage(window));
         /* Check after draining, not before: a late KEYUP/CHAR in this batch
            must not escape because the physical quiet interval just ended. */
+        now = native_clock();
         if (releasing && now - released_at >= 32u && quiet_timers >= 2u &&
             !fnGUI_HavePendingMessage(window)) break;
     }
 finished:
+    c6502_input_finishing = 0u;
     c6502_input_active = 0u;
     c6502_key_head = c6502_key_count = c6502_timer_key_deferred = 0u;
 #endif
@@ -2175,8 +2191,18 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
                 const c6502_u8 *source = direct;
                 if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
                 else {
-                    for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
-                    c6502_perf.picture_staged_bytes += stride; source = row;
+                    /* A complete image may cross a resource page or a
+                       noncontiguous bank window while this row does not.
+                       Finish its LCD write before resolving the next row:
+                       a resource access may invalidate this cache pointer. */
+                    source = picture_direct_source(picture, stride);
+                    if (source) {
+                        picture = (c6502_u16)(picture + stride);
+                        c6502_perf.picture_direct_bytes += stride;
+                    } else {
+                        for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
+                        c6502_perf.picture_staged_bytes += stride; source = row;
+                    }
                 }
                 native_lcd_span(x0 >> 3, x1 >> 3, y, source, 0xffu, 0xffu);
             }
@@ -2227,8 +2253,17 @@ static void native_picture(c6502_u8 x0, c6502_u8 y0,
             const c6502_u8 *source = direct;
             if (direct) { direct += stride; c6502_perf.picture_direct_bytes += stride; }
             else {
-                for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
-                c6502_perf.picture_staged_bytes += stride; source = row;
+                /* The complete source was proved LCD-disjoint above.
+                   Consume a row before any later resource access can
+                   replace its cache slot; crossing rows keep byte reads. */
+                source = picture_direct_source(picture, stride);
+                if (source) {
+                    picture = (c6502_u16)(picture + stride);
+                    c6502_perf.picture_direct_bytes += stride;
+                } else {
+                    for (x = 0u; x < stride; ++x) row[x] = guest_read(picture++);
+                    c6502_perf.picture_staged_bytes += stride; source = row;
+                }
             }
             blit_packed_row(0x400u, x0, (c6502_u8)y,
                 (c6502_u8)(x1 - x0 + 1u), source);
@@ -3855,6 +3890,9 @@ int c6502_native_prepare(void)
     load_file_index();
     c6502_key_initialized = 0u;
     c6502_input_active = 0u;
+#ifndef C6502_TARGET_9288T
+    c6502_input_finishing = 0u;
+#endif
     c6502_key_head = c6502_key_count = 0u;
     c6502_key_repeat = 0xffu;
     c6502_clock_initialized = 0u;

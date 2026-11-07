@@ -206,11 +206,13 @@ int main(void){
     /* A failed seek or short read never exposes a partially filled cache slot. */
     open_header_only();c6502_resource_entry_sp=1;fail_seek_next=1;
     if(!setjmp(escape)){nr_read(4096);assert(0);}
-    assert(nr_error==4 && read_calls==1 && nr_tags[1]==0xffffffffu);
+    assert(nr_error==4 && read_calls==1);
+    for(unsigned i=0;i<NR_SLOTS;++i)assert(nr_tags[i]!=1u);
     nr_close();closed();
     open_header_only();c6502_resource_entry_sp=1;short_read_next=1;
     if(!setjmp(escape)){nr_read(4096);assert(0);}
-    assert(nr_error==4 && read_bytes==64+4095 && nr_tags[1]==0xffffffffu);
+    assert(nr_error==4 && read_bytes==64+4095);
+    for(unsigned i=0;i<NR_SLOTS;++i)assert(nr_tags[i]!=1u);
     nr_close();closed();
     /* Copy-on-write allocation failure aborts rather than altering clean data. */
     open_header_only();c6502_resource_entry_sp=1;fail_malloc_at=malloc_calls+1;

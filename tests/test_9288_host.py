@@ -91,6 +91,7 @@ static unsigned c6502_9288_gui_messages,c6502_9288_gui_keys;
 static unsigned char c6502_9288_gui_pumping;
 static unsigned c6502_output_ready=1,repairs;
 static void c6502_native_present(void){++repairs;}
+static void native_refresh_if_due(void){++repairs;}
 static unsigned native_clock(void){return now;}
 static int native_is_key_message(unsigned m){return m==16;}
 static int fnGUI_HavePendingMessage(unsigned w){assert(w==77);return remaining!=0;}

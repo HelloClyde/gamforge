@@ -219,6 +219,7 @@ static unsigned fs_update(void *f){assert(f);++file_updates;return 0;}
 static unsigned fs_fclose(void *f){assert(f);++file_closes;return 0;}
 static c6502_u32 native_clock(void){return 123;}
 static unsigned c6502_files_initialized,c6502_key_initialized,c6502_input_active;
+static c6502_u8 c6502_input_finishing=1u;
 static unsigned c6502_key_head,c6502_key_count,c6502_key_repeat;
 static unsigned c6502_clock_initialized,c6502_clock_previous,c6502_clock_diagnostics;
 static unsigned c6502_last_frame_tick,c6502_timer_clock,c6502_timer_fraction;
@@ -259,6 +260,7 @@ int main(void){
     assert(!c6502_boot_raw[0]);
     external_open_result=1;memcpy(snapshot_bytes,"C65",3);
     assert(c6502_native_prepare());
+    assert(!c6502_input_finishing);
     assert(external_opens==2 && external_closes==1);
     assert(!c6502_native_state.game && !malloc_calls && !free_calls && index_loads==1);
     assert(!memcmp(c6502_boot_raw,snapshot_bytes,C6502_BOOT_RAW_SIZE));
@@ -271,6 +273,7 @@ int main(void){
     snapshot_bytes[22]=0x33;snapshot_bytes[23]=0x44;snapshot_bytes[24]=0x82;
     snapshot_bytes[64+0x28]=0x34;snapshot_bytes[64+0x29]=0x12;
     assert(c6502_native_prepare());
+    assert(!c6502_input_finishing);
     assert(!malloc_calls && !free_calls && index_loads==1);
     assert(c6502_native_state.game==image);
     assert(c6502_native_state.game_size==C6502_GAME_SIZE);

@@ -51,7 +51,7 @@ def test_direct_framebuffer_matches_reference_for_writes_and_graphics(tmp_path, 
     helpers += part("static c6502_u16 lcd_address", "static c6502_u8 map_key")
     helpers += part("static c6502_u8 screen_bit", "/* The 9288 font renderer")
     helpers += part("static void native_text", "static void integer_to_ascii")
-    helpers += part("static void native_refresh_if_due", "static c6502_u8 translate_key")
+    helpers += part("static void native_refresh_if_due(void)\n{", "static c6502_u8 translate_key")
     perf = (
         "typedef struct C6502_Perf"
         + runtime.split("typedef struct C6502_Perf", 1)[1].split("static void bytes_set", 1)[0]

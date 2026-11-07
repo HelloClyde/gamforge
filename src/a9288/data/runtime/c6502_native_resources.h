@@ -8,10 +8,21 @@
 #define NR_PAGE 4096u
 #define NR_SLOTS 32u
 #define NR_DIRTY_LIMIT 64u
+#ifndef C6502_RESOURCE_CACHE_WAYS
+#define C6502_RESOURCE_CACHE_WAYS 2u
+#endif
+#if C6502_RESOURCE_CACHE_WAYS != 1 && C6502_RESOURCE_CACHE_WAYS != 2
+#error Resource cache supports one or two ways at the same fixed capacity
+#endif
+#define NR_SETS (NR_SLOTS/C6502_RESOURCE_CACHE_WAYS)
 static FS_FILE *nr_file;
 static c6502_u8 *nr_cache;
 static c6502_u8 **nr_dirty;
 static c6502_u32 nr_tags[NR_SLOTS], nr_pages, nr_offset;
+#if C6502_RESOURCE_CACHE_WAYS == 2
+/* One MRU bit per two-way set; repeated hits do not write state. */
+static c6502_u8 nr_mru[NR_SETS];
+#endif
 static c6502_u32 nr_hits, nr_misses, nr_writes, nr_dirty_count, nr_error;
 c6502_u32 c6502_resource_entry_sp;
 extern void c6502_native_resource_abort(void) __attribute__((noreturn));
@@ -51,16 +62,38 @@ static int nr_open(void)
     if (nr_dirty) bytes_set((c6502_u8 *)nr_dirty,0,nr_pages*sizeof(*nr_dirty));
     if (!nr_cache || !nr_dirty) { nr_fail(3); return 0; }
     for (i=0;i<NR_SLOTS;++i) nr_tags[i]=0xffffffffu;
+#if C6502_RESOURCE_CACHE_WAYS == 2
+    bytes_set(nr_mru,0,sizeof(nr_mru));
+#endif
     return 1;
 }
 static c6502_u8 *nr_page(c6502_u32 offset)
 {
     c6502_u32 page=offset/NR_PAGE, slot=page&(NR_SLOTS-1u), size;
+#if C6502_RESOURCE_CACHE_WAYS == 2
+    c6502_u32 set,way;
+#endif
     c6502_u8 *p;
     if (nr_error || offset>=C6502_GAME_SIZE) { nr_fail(4); return 0; }
     if (nr_dirty[page]) { ++nr_hits; return nr_dirty[page]; }
+#if C6502_RESOURCE_CACHE_WAYS == 2
+    set=page&(NR_SETS-1u); slot=set*2u;
+    if (nr_tags[slot]==page) {
+        if (nr_mru[set]!=0u) nr_mru[set]=0u;
+        ++nr_hits; return nr_cache+slot*NR_PAGE;
+    }
+    if (nr_tags[slot+1u]==page) {
+        if (nr_mru[set]!=1u) nr_mru[set]=1u;
+        ++nr_hits; return nr_cache+(slot+1u)*NR_PAGE;
+    }
+    if (nr_tags[slot]==0xffffffffu) way=0u;
+    else if (nr_tags[slot+1u]==0xffffffffu) way=1u;
+    else way=(c6502_u32)nr_mru[set]^1u;
+    slot+=way; nr_mru[set]=(c6502_u8)way;
+#else
+    if (nr_tags[slot]==page) { ++nr_hits; return nr_cache+slot*NR_PAGE; }
+#endif
     p=nr_cache+slot*NR_PAGE;
-    if (nr_tags[slot]==page) { ++nr_hits; return p; }
     ++nr_misses; nr_tags[slot]=0xffffffffu;
     size=C6502_GAME_SIZE-page*NR_PAGE;
     if (size>NR_PAGE) size=NR_PAGE;
